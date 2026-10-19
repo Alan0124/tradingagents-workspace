@@ -19,7 +19,7 @@ dependencies = [
     "markdown-it-py>=4.0",
     "packaging>=24.0",
     "pandas>=3.0.6",
-    "python-dotenv>=1.0.0",
+    "python-dotenv>=1.2.0",
     "pytz>=2025.2",
     "questionary>=2.1.0",
     "requests>=2.32.4",
@@ -44,16 +44,19 @@ bedrock = [
 
 [project.scripts]
 tradingagents = "cli.main:app"
+tradingagents-web = "webapp.server:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "tradingagents.__version__"}
 
 [tool.setuptools.packages.find]
-include = ["tradingagents*", "cli*"]
+include = ["tradingagents*", "cli*", "webapp*"]
+exclude = ["webapp.tests*"]
 
 [tool.setuptools.package-data]
 cli = ["static/*"]
 tradingagents = ["assets/*.svg"]
+webapp = ["static/*", "assets/*.icns", "launch.command"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

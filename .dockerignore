@@ -13,3 +13,10 @@ results
 eval_results
 Dockerfile
 docker-compose.yml
+
+# Credentials and local workspace history must never enter image layers.
+.env.*
+!.env.example
+!.env.enterprise.example
+.local
+webapp/tests

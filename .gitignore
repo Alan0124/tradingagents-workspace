@@ -221,3 +221,9 @@ __marimo__/
 # Enterprise env file (secrets) and generated run reports
 .env.enterprise
 reports/
+
+# Local browser workspace state (history and generated reports)
+.local/
+
+# macOS metadata
+.DS_Store

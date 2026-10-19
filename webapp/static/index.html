@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#17382e" />
+    <meta
+      name="description"
+      content="在本机整理多角度研究过程与报告的投研工作台。"
+    />
+    <title>TradingAgents · 投研工作台</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/style.css" />
+    <script defer src="/app.js"></script>
+  </head>
+  <body>
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="TradingAgents 首页"
+        ><img src="/favicon.svg" alt="" /><span
+          >TradingAgents<small>RESEARCH WORKSPACE</small></span
+        ></a
+      >
+      <div class="workspace-label">个人工作空间 <span>LOCAL</span></div>
+      <nav aria-label="主导航">
+        <button class="nav-item active" data-view="workspace">
+          <span data-icon="grid"></span>投研工作台<span class="nav-hint"
+            >⌘ 1</span
+          ></button
+        ><button class="nav-item" data-view="history">
+          <span data-icon="history"></span>研究档案<span
+            id="history-count"
+            class="count"
+            >0</span
+          ></button
+        ><button class="nav-item" id="settings-nav">
+          <span data-icon="settings"></span>模型设置
+        </button>
+      </nav>
+      <div class="sidebar-section">
+        <div class="eyebrow">
+          最近研究
+          <button id="new-sidebar" title="新建研究" aria-label="新建研究">
+            ＋
+          </button>
+        </div>
+        <div id="recent-runs">
+          <p class="sidebar-empty">第一份研究，从这里开始。</p>
+        </div>
+      </div>
+      <div class="sidebar-bottom">
+        <div class="local-status">
+          <i></i> 本地引擎 <span id="engine-version">连接中</span>
+        </div>
+        <p>把数据交给分析师。<br />把判断留给自己。</p>
+        <a
+          href="https://github.com/TauricResearch/TradingAgents"
+          target="_blank"
+          rel="noreferrer"
+          >基于 TradingAgents 开源引擎 ↗</a
+        >
+      </div>
+    </aside>
+    <main aria-label="投研工作区">
+      <header class="topbar">
+        <div class="breadcrumb">
+          WORKSPACE <span>/</span> <b id="page-label">投研工作台</b>
+        </div>
+        <div class="topbar-right">
+          <span class="today" id="today-label"></span
+          ><span class="local-pill"><i></i> 本机运行</span
+          ><button
+            class="avatar"
+            id="settings-avatar"
+            aria-label="打开模型设置"
+          >
+            AL
+          </button>
+        </div>
+      </header>
+      <section id="workspace-view" class="page">
+        <div class="page-heading">
+          <div>
+            <div class="eyebrow accent">PRIVATE RESEARCH DESK</div>
+            <h1>让研究更清晰，让判断属于你<span>。</span></h1>
+            <p>在一个工作区里整理市场、财务、新闻与情绪等研究维度。</p>
+          </div>
+          <button class="button ghost" id="new-research">
+            <span data-icon="plus"></span>新建研究
+          </button>
+        </div>
+        <div class="workspace-grid">
+          <section class="panel setup-panel">
+            <div class="panel-heading">
+              <div class="step-number">01</div>
+              <div>
+                <h2>研究设定</h2>
+                <p>选择标的、分析维度与讨论轮次。</p>
+              </div>
+              <span data-icon="sliders"></span>
+            </div>
+            <form id="analysis-form">
+              <label for="ticker"
+                >研究标的 <span class="required">*</span></label
+              >
+              <div class="ticker-input">
+                <span data-icon="search"></span
+                ><input
+                  id="ticker"
+                  name="ticker"
+                  placeholder="输入股票代码，例如 AAPL"
+                  maxlength="31"
+                  autocomplete="off"
+                  required
+                /><span>SYMBOL</span>
+              </div>
+              <div class="quick-symbols">
+                <button type="button" data-ticker="AAPL">
+                  苹果 <b>AAPL</b></button
+                ><button type="button" data-ticker="NVDA">
+                  英伟达 <b>NVDA</b></button
+                ><button type="button" data-ticker="0700.HK">
+                  腾讯 <b>0700.HK</b></button
+                ><button type="button" data-ticker="600519.SS">
+                  茅台 <b>600519.SS</b>
+                </button>
+              </div>
+              <div class="field-row">
+                <div>
+                  <label for="analysis-date">分析日期</label
+                  ><input type="date" id="analysis-date" required />
+                </div>
+                <div>
+                  <label for="asset-type">资产类型</label
+                  ><select id="asset-type">
+                    <option value="stock">股票 / ETF</option>
+                    <option value="crypto">加密资产</option>
+                  </select>
+                </div>
+              </div>
+              <div class="section-label">
+                <label>分析维度</label><span>按需选择</span>
+              </div>
+              <div class="analyst-grid">
+                <label class="analyst-choice"
+                  ><input
+                    type="checkbox"
+                    name="analysts"
+                    value="market"
+                    checked /><span
+                    class="analyst-symbol blue"
+                    data-icon="chart"
+                  ></span
+                  ><span><b>技术面</b><small>趋势与技术指标</small></span
+                  ><i></i
+                ></label>
+                <label class="analyst-choice"
+                  ><input
+                    type="checkbox"
+                    name="analysts"
+                    value="fundamentals"
+                    checked /><span
+                    class="analyst-symbol amber"
+                    data-icon="building"
+                  ></span
+                  ><span><b>基本面</b><small>财务与公司价值</small></span
+                  ><i></i
+                ></label>
+                <label class="analyst-choice"
+                  ><input
+                    type="checkbox"
+                    name="analysts"
+                    value="news"
+                    checked /><span
+                    class="analyst-symbol violet"
+                    data-icon="news"
+                  ></span
+                  ><span><b>新闻面</b><small>事件与宏观信号</small></span
+                  ><i></i
+                ></label>
+                <label class="analyst-choice"
+                  ><input
+                    type="checkbox"
+                    name="analysts"
+                    value="social"
+                    checked /><span
+                    class="analyst-symbol green"
+                    data-icon="chat"
+                  ></span
+                  ><span><b>市场情绪</b><small>社区与市场观点</small></span
+                  ><i></i
+                ></label>
+              </div>
+              <label>研究深度</label>
+              <div class="depth-picker" role="group" aria-label="研究深度">
+                <button type="button" class="selected" data-rounds="1">
+                  <b>轻量研究</b><small>1 轮辩论</small></button
+                ><button type="button" data-rounds="2">
+                  <b>标准研究</b><small>2 轮辩论</small></button
+                ><button type="button" data-rounds="3">
+                  <b>深度研究</b><small>3 轮辩论</small>
+                </button>
+              </div>
+              <div class="model-summary">
+                <div>
+                  <span data-icon="cpu"></span
+                  ><span id="selected-provider">模型服务</span
+                  ><span class="config-badge" id="model-status">待配置</span>
+                </div>
+                <button type="button" id="configure-model">
+                  配置 <span>↗</span>
+                </button>
+                <p id="selected-models">先连接模型，再开始你的第一份研究。</p>
+              </div>
+              <p id="form-error" class="inline-error" role="alert" hidden></p>
+              <button
+                id="start-analysis"
+                class="button primary start-button"
+                type="submit"
+              >
+                <span data-icon="sparkles"></span
+                ><span id="start-label">开始研究</span
+                ><span class="arrow">↗</span>
+              </button>
+              <p class="form-footnote">
+                <span data-icon="lock"></span>配置保存在本机 ·
+                分析时访问所选模型与数据源
+              </p>
+            </form>
+          </section>
+          <div class="research-column">
+            <section class="panel activity-panel">
+              <div class="panel-heading compact">
+                <div>
+                  <h2>研究进程 <span class="tiny-label">PROCESS</span></h2>
+                  <p id="run-subtitle">研究阶段与运行状态会显示在这里。</p>
+                </div>
+                <span class="status-tag" id="run-status">等待开始</span>
+              </div>
+              <div id="pipeline" class="pipeline"></div>
+              <div class="activity-footer">
+                <div>
+                  <i id="activity-dot"></i
+                  ><span id="stage-text" role="status"
+                    >团队已就绪，等待研究任务</span
+                  >
+                </div>
+                <span id="elapsed">—</span
+                ><button id="cancel-run" hidden>停止研究</button>
+              </div>
+              <details id="activity-details">
+                <summary>
+                  查看运行记录 <span id="event-count">0 条</span>
+                </summary>
+                <div id="events" class="events">
+                  <p>开始研究后，工具调用与阶段进展将在这里显示。</p>
+                </div>
+              </details>
+            </section>
+            <section class="panel report-panel">
+              <div class="report-toolbar">
+                <div>
+                  <h2>研究报告</h2>
+                  <span id="report-subtitle">RESEARCH BRIEF</span>
+                </div>
+                <div class="export-actions">
+                  <button
+                    id="reuse-run"
+                    type="button"
+                    class="button small ghost"
+                    hidden
+                  >
+                    复用配置</button
+                  ><a
+                    id="export-md"
+                    class="icon-button"
+                    aria-label="下载 Markdown 报告"
+                    title="下载 Markdown"
+                    hidden
+                    >MD ↓</a
+                  ><a id="export-html" class="button small ghost" hidden
+                    ><span data-icon="download"></span>导出报告</a
+                  >
+                </div>
+              </div>
+              <div id="report-empty" class="report-empty">
+                <div class="empty-illustration" aria-hidden="true">
+                  <div class="paper">
+                    <span class="paper-kicker">RESEARCH NOTE</span>
+                    <div class="paper-line long"></div>
+                    <div class="paper-line"></div>
+                    <div class="paper-line long"></div>
+                    <div class="paper-line short"></div>
+                    <span class="paper-seal">＋</span>
+                  </div>
+                  <span class="float-mark">✦</span>
+                </div>
+                <h3>为下一次研究，留一页空白。</h3>
+                <p>
+                  选择标的并开始研究。所选维度的分析报告与运行记录会逐步显示在这里。
+                </p>
+                <div class="empty-features">
+                  <span>多维度证据整理</span><span>研究过程留档</span
+                  ><span>报告可导出</span>
+                </div>
+              </div>
+              <div id="report-content" hidden>
+                <div class="decision-banner" id="decision-banner" hidden>
+                  <div>
+                    <span>最终评级</span><strong id="decision-rating"></strong>
+                  </div>
+                  <p>请结合报告中的论据与数据质量独立评估。</p>
+                </div>
+                <div id="run-error" class="run-error" role="alert" hidden></div>
+                <div
+                  id="report-tabs"
+                  role="tablist"
+                  aria-label="报告章节"
+                ></div>
+                <article id="report-body" class="markdown-body"></article>
+              </div>
+            </section>
+            <div class="stats-strip">
+              <div><span>模型调用</span><b id="stat-llm">—</b></div>
+              <div><span>数据工具调用</span><b id="stat-tools">—</b></div>
+              <div>
+                <span>输入 / 输出 Token</span><b id="stat-tokens">— / —</b>
+              </div>
+              <div class="research-note">
+                <span data-icon="info"></span>AI 辅助研究，不构成投资建议。
+              </div>
+            </div>
+          </div>
+        </div>
+        <footer class="page-footer">
+          <span>TRADINGAGENTS <b>WORKSPACE</b></span
+          ><span>数据收集 → 分析 → 讨论 → 风险评估</span>
+        </footer>
+      </section>
+      <section id="history-view" class="page" hidden>
+        <div class="page-heading">
+          <div>
+            <div class="eyebrow accent">RESEARCH ARCHIVE</div>
+            <h1>研究档案<span>。</span></h1>
+            <p>按标的与日期回看已保存的研究过程和报告。</p>
+          </div>
+          <button class="button primary" id="history-new">
+            <span data-icon="plus"></span>新建研究
+          </button>
+        </div>
+        <div class="panel history-panel">
+          <div class="history-toolbar">
+            <h2>全部研究 <span id="archive-count"></span></h2>
+            <div class="ticker-input history-search">
+              <span data-icon="search"></span
+              ><input
+                id="history-search"
+                aria-label="搜索历史研究"
+                placeholder="搜索代码或模型服务"
+              />
+            </div>
+          </div>
+          <div class="history-scroll">
+            <table class="history-table">
+              <thead>
+                <tr>
+                  <th>研究标的</th>
+                  <th>分析日期</th>
+                  <th>模型服务</th>
+                  <th>评级</th>
+                  <th>状态</th>
+                  <th>创建时间</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="history-rows"></tbody>
+            </table>
+          </div>
+          <div id="history-empty" class="history-empty" role="status">
+            还没有研究记录。开始第一份研究，结果会自动保存在这里。
+          </div>
+        </div>
+      </section>
+    </main>
+    <dialog id="settings-dialog">
+      <form id="settings-form">
+        <div class="dialog-heading">
+          <div>
+            <div class="eyebrow accent">MODEL CONNECTION</div>
+            <h2>连接你的模型</h2>
+            <p>为分析师和研究经理选择合适的模型。</p>
+          </div>
+          <button
+            type="button"
+            class="icon-button close-dialog"
+            aria-label="关闭模型设置"
+          >
+            ×
+          </button>
+        </div>
+        <label for="provider">模型服务</label
+        ><select id="provider"></select>
+        <div id="key-section">
+          <div class="section-label">
+            <label for="api-key">API Key</label
+            ><span id="saved-key-status"></span>
+          </div>
+          <input
+            id="api-key"
+            type="password"
+            placeholder="输入密钥，保存在本机 .env"
+            autocomplete="new-password"
+          />
+          <p class="field-help">
+            已保存的密钥不会回传到页面。留空保留现有密钥。
+          </p>
+        </div>
+        <div id="chatgpt-section" hidden>
+          <p id="chatgpt-status">登录后使用你的 ChatGPT 订阅额度。</p>
+          <button id="chatgpt-login" class="button ghost" type="button">
+            登录 ChatGPT ↗
+          </button>
+          <p id="login-feedback" class="field-help" role="status"></p>
+          <a id="login-link" target="_blank" rel="noreferrer" hidden
+            >继续登录 ↗</a
+          >
+        </div>
+        <label for="backend-url"
+          >自定义接口地址 <span class="optional">可选</span></label
+        ><input
+          id="backend-url"
+          type="url"
+          placeholder="使用默认地址，或输入 https://…/v1"
+        />
+        <div class="field-row">
+          <div>
+            <label for="quick-model">快速模型</label
+            ><input
+              id="quick-model"
+              list="quick-model-options"
+              placeholder="输入或选择模型 ID"
+              required
+            /><datalist id="quick-model-options"></datalist>
+          </div>
+          <div>
+            <label for="deep-model">深度模型</label
+            ><input
+              id="deep-model"
+              list="deep-model-options"
+              placeholder="输入或选择模型 ID"
+              required
+            /><datalist id="deep-model-options"></datalist>
+          </div>
+        </div>
+        <p class="field-help">
+          快速模型负责分析与辩论，深度模型负责研究经理和组合经理。可输入服务商支持的自定义模型
+          ID。
+        </p>
+        <div class="settings-note">
+          <span data-icon="lock"></span>
+          <p>
+            密钥仅保存于本机。开始研究后，数据会发送至你选择的模型服务；调用费用按服务商规则计算。
+          </p>
+        </div>
+        <p id="settings-error" class="inline-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button type="button" class="button ghost close-dialog">取消</button
+          ><button id="save-settings" type="submit" class="button primary">
+            保存配置 <span>↗</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <div id="toast" role="status" hidden></div>
+  </body>
+</html>

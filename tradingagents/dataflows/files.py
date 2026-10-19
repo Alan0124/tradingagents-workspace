@@ -9,6 +9,11 @@ from contextlib import contextmanager
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+_DEADLOCK_ERRNOS = frozenset(
+    value
+    for name in ("EDEADLOCK", "EDEADLK")
+    if (value := getattr(errno, name, None)) is not None
+)
 
 
 def replace_file(path, write: Callable[[str], None]) -> None:
@@ -74,12 +79,12 @@ def _hold_windows(handle, wait: bool = True) -> Iterator[bool]:
             msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK if wait else msvcrt.LK_NBLCK, 1)
             break
         except OSError as exc:
-            if not wait and exc.errno in (errno.EACCES, errno.EDEADLOCK):
+            if not wait and (exc.errno == errno.EACCES or exc.errno in _DEADLOCK_ERRNOS):
                 yield False   # another writer holds it
                 return
             # LK_LOCK gives up after about ten seconds of another writer's hold;
             # any other failure is not a wait.
-            if exc.errno != errno.EDEADLOCK:
+            if exc.errno not in _DEADLOCK_ERRNOS:
                 raise
     try:
         yield True

@@ -1,0 +1,29 @@
+name: Workspace cross-platform
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop-platforms:
+    name: workspace (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: python -m pip install -e .
+      - name: Offline workspace tests
+        run: python -m unittest discover -s webapp/tests -v
+      - name: CLI smoke
+        run: tradingagents-web --help

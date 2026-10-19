@@ -101,12 +101,30 @@ def _fake_msvcrt(results):
     return types.SimpleNamespace(LK_LOCK=2, LK_NBLCK=1, LK_UNLCK=0, locking=locking), calls
 
 
-@pytest.mark.unit
-def test_on_windows_the_lock_is_waited_for_while_another_writer_holds_it(tmp_path, monkeypatch):
+def _deadlock_errnos():
     import errno
+
+    return tuple(dict.fromkeys(
+        value
+        for value in (getattr(errno, "EDEADLOCK", None), getattr(errno, "EDEADLK", None))
+        if value is not None
+    ))
+
+
+def _windows_contention_errnos():
+    import errno
+
+    return tuple(dict.fromkeys((errno.EACCES, *_deadlock_errnos())))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("deadlock_errno", _deadlock_errnos())
+def test_on_windows_the_lock_is_waited_for_while_another_writer_holds_it(
+    tmp_path, monkeypatch, deadlock_errno
+):
     import sys
 
-    fake, calls = _fake_msvcrt([OSError(errno.EDEADLOCK, "held"), None])
+    fake, calls = _fake_msvcrt([OSError(deadlock_errno, "held"), None])
     monkeypatch.setitem(sys.modules, "msvcrt", fake)
 
     with open(tmp_path / "log.md.lock", "a+b") as handle, files._hold_windows(handle):
@@ -152,11 +170,13 @@ def test_a_lock_held_elsewhere_is_reported_when_not_waiting(tmp_path):
 
 
 @pytest.mark.unit
-def test_on_windows_a_held_lock_is_reported_when_not_waiting(tmp_path, monkeypatch):
-    import errno
+@pytest.mark.parametrize("contention_errno", _windows_contention_errnos())
+def test_on_windows_a_held_lock_is_reported_when_not_waiting(
+    tmp_path, monkeypatch, contention_errno
+):
     import sys
 
-    fake, calls = _fake_msvcrt([OSError(errno.EACCES, "held")])
+    fake, calls = _fake_msvcrt([OSError(contention_errno, "held")])
     monkeypatch.setitem(sys.modules, "msvcrt", fake)
 
     with open(tmp_path / "log.md.lock", "a+b") as handle, files._hold_windows(handle, wait=False) as acquired:
