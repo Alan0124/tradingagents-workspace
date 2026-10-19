@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta name="theme-color" content="#17382e" />
+    <meta name="theme-color" content="#101114" />
     <meta
       name="description"
       content="在本机整理多角度研究过程与报告的投研工作台。"
@@ -11,6 +11,7 @@
     <title>TradingAgents · 投研工作台</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/style.css" />
+    <script defer src="/visuals.js"></script>
     <script defer src="/app.js"></script>
   </head>
   <body>
@@ -81,8 +82,8 @@
         <div class="page-heading">
           <div>
             <div class="eyebrow accent">PRIVATE RESEARCH DESK</div>
-            <h1>让研究更清晰，让判断属于你<span>。</span></h1>
-            <p>在一个工作区里整理市场、财务、新闻与情绪等研究维度。</p>
+            <h1>证据在前，判断在你<span>。</span></h1>
+            <p>从行情到观点，在一个工作区审阅完整的研究链路。</p>
           </div>
           <button class="button ghost" id="new-research">
             <span data-icon="plus"></span>新建研究
@@ -96,7 +97,15 @@
                 <h2>研究设定</h2>
                 <p>选择标的、分析维度与讨论轮次。</p>
               </div>
-              <span data-icon="sliders"></span>
+              <button
+                type="button"
+                id="research-settings"
+                class="icon-button"
+                aria-label="打开研究模型设置"
+                title="模型设置"
+              >
+                <span data-icon="sliders"></span>
+              </button>
             </div>
             <form id="analysis-form">
               <label for="ticker"
@@ -124,19 +133,13 @@
                   茅台 <b>600519.SS</b>
                 </button>
               </div>
-              <div class="field-row">
-                <div>
-                  <label for="analysis-date">分析日期</label
-                  ><input type="date" id="analysis-date" required />
-                </div>
-                <div>
-                  <label for="asset-type">资产类型</label
-                  ><select id="asset-type">
-                    <option value="stock">股票 / ETF</option>
-                    <option value="crypto">加密资产</option>
-                  </select>
-                </div>
+              <div class="research-date-field">
+                <label for="analysis-date">分析日期</label
+                ><input type="date" id="analysis-date" required />
               </div>
+              <p id="asset-hint" class="field-help" role="status">
+                输入代码后自动识别标的，无需选择资产类型。
+              </p>
               <div class="section-label">
                 <label>分析维度</label><span>按需选择</span>
               </div>
@@ -319,6 +322,65 @@
                 <article id="report-body" class="markdown-body"></article>
               </div>
             </section>
+            <section
+              id="research-visuals"
+              class="research-visuals"
+              aria-label="研究数据概览"
+            >
+              <div class="visuals-heading">
+                <div>
+                  <span class="eyebrow">OBSERVATORY</span>
+                  <h2>研究观测</h2>
+                </div>
+                <span class="tiny-label">基于实际数据与任务记录</span>
+              </div>
+              <section class="panel chart-card market-chart-card">
+                <div class="chart-heading">
+                  <h3>价格轨迹</h3>
+                  <button
+                    id="load-market-chart"
+                    type="button"
+                    class="button small ghost"
+                    disabled
+                  >
+                    加载行情
+                  </button>
+                </div>
+                <div id="market-chart" class="chart-region" aria-live="polite">
+                  <p class="chart-empty-state">
+                    选择或完成一份研究后，可加载截至分析日的历史收盘价。
+                  </p>
+                </div>
+                <div id="market-chart-source" class="chart-source">
+                  Yahoo Finance · 日线 · 原始报价 · 缓存最长 15 分钟
+                </div>
+              </section>
+              <div class="visuals-grid">
+                <section class="panel chart-card">
+                  <div class="chart-heading">
+                    <h3>研究覆盖</h3>
+                    <span>报告章节</span>
+                  </div>
+                  <div id="coverage-chart" class="chart-region">
+                    <p class="chart-empty-state">
+                      研究开始后，展示所选分析维度的报告完成情况。
+                    </p>
+                  </div>
+                </section>
+                <section class="panel chart-card">
+                  <div class="chart-heading">
+                    <h3>模型用量</h3>
+                    <span>Token</span>
+                  </div>
+                  <div id="usage-chart" class="chart-region">
+                    <p class="chart-empty-state">
+                      模型返回使用量后，展示输入与输出的实际占比。
+                    </p>
+                  </div>
+                </section>
+              </div>
+              <div id="activity-chart" hidden></div>
+            </section>
             <div class="stats-strip">
               <div><span>模型调用</span><b id="stat-llm">—</b></div>
               <div><span>数据工具调用</span><b id="stat-tools">—</b></div>
@@ -431,28 +493,39 @@
           type="url"
           placeholder="使用默认地址，或输入 https://…/v1"
         />
+        <div class="section-label model-options-heading">
+          <label>模型选择</label
+          ><button id="refresh-models" type="button" class="button small ghost">
+            刷新可用模型
+          </button>
+        </div>
+        <p id="models-feedback" class="field-help" role="status"></p>
         <div class="field-row">
           <div>
             <label for="quick-model">快速模型</label
+            ><select id="quick-model" required></select
             ><input
-              id="quick-model"
-              list="quick-model-options"
-              placeholder="输入或选择模型 ID"
-              required
-            /><datalist id="quick-model-options"></datalist>
+              id="quick-model-custom"
+              aria-label="自定义快速模型 ID"
+              placeholder="仅自定义模型时填写 ID"
+              hidden
+              disabled
+            />
           </div>
           <div>
             <label for="deep-model">深度模型</label
+            ><select id="deep-model" required></select
             ><input
-              id="deep-model"
-              list="deep-model-options"
-              placeholder="输入或选择模型 ID"
-              required
-            /><datalist id="deep-model-options"></datalist>
+              id="deep-model-custom"
+              aria-label="自定义深度模型 ID"
+              placeholder="仅自定义模型时填写 ID"
+              hidden
+              disabled
+            />
           </div>
         </div>
         <p class="field-help">
-          快速模型负责分析与辩论，深度模型负责研究经理和组合经理。可输入服务商支持的自定义模型
+          从列表选择模型。快速模型负责分析与辩论，深度模型负责最终审议；仅使用未列出的模型时才需要填写
           ID。
         </p>
         <div class="settings-note">

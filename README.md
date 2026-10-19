@@ -26,6 +26,13 @@
 
 </details>
 
+<details>
+<summary>查看行情与研究覆盖图表</summary>
+
+![研究观测](docs/images/research-visuals.png)
+
+</details>
+
 ## 为什么做这个
 
 原版 TradingAgents 将分析师、研究员、交易员和风险经理组织成一套多 Agent 研究流程。这个版本在原引擎上增加了完整的图形工作台：无需在终端回答一连串问题，也能查看研究进行到哪一步、不同角色提供了哪些证据，以及最终结论从何而来。
@@ -36,8 +43,9 @@
 
 | 能力 | 工作台体验 |
 | --- | --- |
-| 发起研究 | 输入股票代码与分析日期，选择分析团队和辩论深度 |
-| 模型配置 | 选择模型服务，分别指定快速模型、深度模型；支持自定义模型 ID 与兼容接口 |
+| 发起研究 | 输入股票代码与分析日期，自动识别资产类型，选择分析团队和辩论深度 |
+| 模型配置 | 选择模型服务，在下拉列表中选择快速模型、深度模型；支持刷新订阅可用模型与显式自定义 |
+| 可视化 | 加载截至分析日的价格轨迹，查看报告覆盖与实际 Token 分配 |
 | 观察进程 | 查看分析、辩论、交易方案、风控和决策各阶段，以及工具调用记录 |
 | 阅读报告 | 技术面、基本面、新闻、情绪、多空观点和风险意见按章节展示 |
 | 管理任务 | 后台运行、主动停止；刷新页面可恢复当前研究视图 |
@@ -98,8 +106,8 @@ python -m webapp.install_desktop
 ### 第一份研究
 
 1. 打开「模型设置」，选择服务商，填写对应的 API Key。
-2. 选择快速模型与深度模型，保存配置。模型 ID 必须由你的服务商实际支持。
-3. 输入标的，例如 `AAPL`、`NVDA`、`0700.HK` 或 `600519.SS`。
+2. 从下拉列表选择快速模型与深度模型，保存配置。订阅模型可点击「刷新可用模型」获取账号实际可见选项；只有列表外的自定义服务需要手动输入 ID。
+3. 输入标的，系统自动识别资产类别。例如 `AAPL`、`NVDA`、`0700.HK` 或 `600519.SS`。
 4. 选择日期、分析团队和研究深度，然后点击「开始研究」。
 5. 报告章节会随流程逐步出现，任务完成后可查看最终评级并导出。
 
@@ -133,7 +141,7 @@ python -m webapp.install_desktop
 
 ## 开发与测试
 
-前端采用原生 HTML / CSS / JavaScript，无需 Node 构建步骤。后端使用 Python 标准库 HTTP 服务、SQLite 与原项目 LangGraph 流程。
+前端采用石墨黑 / 冷灰视觉、原生 HTML / CSS / JavaScript，无需 Node 构建步骤。后端使用 Python 标准库 HTTP 服务、SQLite 与原项目 LangGraph 流程。
 
 ```sh
 pip install -e ".[dev]"
@@ -143,6 +151,7 @@ python -m unittest discover -s webapp/tests -v
 
 # 前端语法与交互回归测试（需要 Node.js 22+）
 node --check webapp/static/app.js
+node --check webapp/static/visuals.js
 node --test webapp/tests/frontend*.test.*
 
 # 原引擎测试

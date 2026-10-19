@@ -17,7 +17,7 @@ import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from webapp import __version__ as WORKSPACE_VERSION
 from webapp.core import (
@@ -29,10 +29,12 @@ from webapp.core import (
     document,
     metadata,
     redact,
+    refresh_models,
     report_html,
     save_settings,
     summary,
 )
+from webapp.market import get_market_history
 
 STATIC = Path(__file__).parent / "static"
 
@@ -84,7 +86,7 @@ class Server(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "TradingAgentsWorkspace/1.0"
+    server_version = f"TradingAgentsWorkspace/{WORKSPACE_VERSION}"
 
     def log_message(self, *_):
         pass
@@ -128,7 +130,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send({"error": redact(str(exc))}, 500)
 
     def route_get(self):
-        path = urlsplit(self.path).path
+        parsed_url = urlsplit(self.path)
+        path = parsed_url.path
         if path == "/api/health":
             return self.send(
                 {
@@ -146,6 +149,18 @@ class Handler(BaseHTTPRequestHandler):
                     "runs": [summary(r) for r in self.server.manager.store.all()],
                 }
             )
+        if path == "/api/models":
+            providers = parse_qs(parsed_url.query).get("provider", [])
+            if len(providers) != 1 or not providers[0]:
+                return self.send({"error": "请指定要刷新的模型服务。"}, 400)
+            try:
+                return self.send(refresh_models(providers[0]))
+            except PermissionError as exc:
+                return self.send({"error": str(exc)}, 409)
+            except ValueError as exc:
+                return self.send({"error": str(exc)}, 400)
+            except RuntimeError as exc:
+                return self.send({"error": str(exc)}, 502)
         if path == "/api/runs":
             return self.send([summary(r) for r in self.server.manager.store.all()])
         if path == "/api/login":
@@ -159,6 +174,13 @@ class Handler(BaseHTTPRequestHandler):
                     {**run, "rendered": {k: MD.render(v) for k, v in run["reports"].items()}}
                 )
             ext = parts[3]
+            if ext == "market":
+                try:
+                    return self.send(get_market_history(run["config"]))
+                except ValueError as exc:
+                    return self.send({"error": str(exc)}, 400)
+                except RuntimeError as exc:
+                    return self.send({"error": str(exc)}, 502)
             if ext == "report.md":
                 return self.send(
                     document(run),
@@ -174,6 +196,7 @@ class Handler(BaseHTTPRequestHandler):
         files = {
             "/": "index.html",
             "/app.js": "app.js",
+            "/visuals.js": "visuals.js",
             "/style.css": "style.css",
             "/favicon.svg": "favicon.svg",
         }

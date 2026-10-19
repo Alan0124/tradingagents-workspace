@@ -89,6 +89,34 @@ const analystKeys = {
   social: "sentiment_report",
 };
 const number = (v) => Number(v || 0).toLocaleString("zh-CN");
+const CUSTOM_MODEL_VALUE = "__tradingagents_custom_model__";
+const cryptoBases = new Set([
+  "BTC",
+  "ETH",
+  "SOL",
+  "XRP",
+  "ADA",
+  "DOGE",
+  "LTC",
+  "BCH",
+  "DOT",
+  "AVAX",
+  "LINK",
+]);
+function inferAssetType(ticker) {
+  const symbol = String(ticker || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\++$/, "");
+  if (/-\b(?:USD|USDT|USDC|BTC|ETH)$/.test(symbol)) return "crypto";
+  const compact = symbol.replaceAll("-", "");
+  return ["USDT", "USDC", "USD"].some((quote) => {
+    const base = compact.endsWith(quote) ? compact.slice(0, -quote.length) : "";
+    return cryptoBases.has(base);
+  })
+    ? "crypto"
+    : "stock";
+}
 const localDate = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -191,9 +219,55 @@ function updateStart() {
 function defaults(provider) {
   const p = providerInfo(provider);
   return {
-    quick: p.models.quick?.[0]?.id || "",
-    deep: p.models.deep?.[0]?.id || "",
+    quick: p?.models?.quick?.find((m) => m.id !== "custom")?.id || "",
+    deep: p?.models?.deep?.find((m) => m.id !== "custom")?.id || "",
   };
+}
+function modelChoices(provider, tier) {
+  const models = providerInfo(provider)?.models?.[tier] || [];
+  const choices = [];
+  const seen = new Set();
+  for (const model of models) {
+    if (!model || typeof model.id !== "string" || !model.id) continue;
+    if (model.id === "custom") continue;
+    if (seen.has(model.id)) continue;
+    seen.add(model.id);
+    choices.push({ label: String(model.label || model.id), id: model.id });
+  }
+  return choices;
+}
+function setModelSelect(tier, selected = "", customValue = "") {
+  const provider = $("#provider").value;
+  const select = $(`#${tier}-model`);
+  const customInput = $(`#${tier}-model-custom`);
+  const choices = modelChoices(provider, tier);
+  const value =
+    selected ||
+    choices[0]?.id ||
+    (provider === "chatgpt" ? "" : CUSTOM_MODEL_VALUE);
+  if (
+    value &&
+    value !== CUSTOM_MODEL_VALUE &&
+    !choices.some((choice) => choice.id === value)
+  ) {
+    choices.push({ label: `已保存 · ${value}`, id: value });
+  }
+  select.replaceChildren(
+    ...(value ? [] : [new Option("刷新可用模型后选择…", "")]),
+    ...choices.map((choice) => new Option(choice.label, choice.id)),
+    new Option("自定义模型 ID…", CUSTOM_MODEL_VALUE),
+  );
+  select.value = value;
+  const isCustom = select.value === CUSTOM_MODEL_VALUE;
+  customInput.hidden = !isCustom;
+  customInput.disabled = !isCustom;
+  customInput.value = isCustom ? customValue : "";
+}
+function selectedModel(tier) {
+  const value = $(`#${tier}-model`).value;
+  return value === CUSTOM_MODEL_VALUE
+    ? $(`#${tier}-model-custom`).value.trim()
+    : value;
 }
 function openSettings() {
   const provider = $("#provider");
@@ -204,8 +278,6 @@ function openSettings() {
   });
   provider.value = state.provider;
   $("#api-key").value = "";
-  $("#quick-model").value = state.quick_model;
-  $("#deep-model").value = state.deep_model;
   $("#backend-url").value = state.backend_url;
   settingsProvider(false);
   inlineError("#settings-error", "");
@@ -216,16 +288,18 @@ function settingsProvider(reset) {
   const d = defaults(p.id);
   if (reset) {
     $("#api-key").value = "";
-    $("#quick-model").value = d.quick;
-    $("#deep-model").value = d.deep;
     $("#backend-url").value =
       p.id === "ollama" ? "http://localhost:11434/v1" : "";
   }
   for (const tier of ["quick", "deep"]) {
-    $(`#${tier}-model-options`).replaceChildren(
-      ...(p.models[tier] || []).map((m) => new Option(m.label, m.id)),
-    );
+    const selected = reset ? d[tier] : state[`${tier}_model`];
+    setModelSelect(tier, selected || "", "");
   }
+  $("#refresh-models").hidden = p.id !== "chatgpt";
+  text(
+    $("#models-feedback"),
+    p.id === "chatgpt" ? "可刷新当前 ChatGPT 账户能够使用的模型。" : "",
+  );
   $("#key-section").hidden = !p.key_required && p.id !== "openai_compatible";
   text($("#saved-key-status"), p.configured ? "已保存密钥" : "尚未配置");
   $("#chatgpt-section").hidden = p.id !== "chatgpt";
@@ -242,11 +316,24 @@ async function saveSettings(event) {
   inlineError("#settings-error", "");
   $("#save-settings").disabled = true;
   try {
+    const quickModel = selectedModel("quick");
+    const deepModel = selectedModel("deep");
+    if (!quickModel || !deepModel) {
+      inlineError("#settings-error", "请选择模型，或填写自定义模型 ID。");
+      const tier = !quickModel ? "quick" : "deep";
+      const select = $(`#${tier}-model`);
+      $(
+        select.value === CUSTOM_MODEL_VALUE
+          ? `#${tier}-model-custom`
+          : `#${tier}-model`,
+      ).focus();
+      return;
+    }
     const payload = {
       provider: $("#provider").value,
       api_key: $("#api-key").value,
-      quick_model: $("#quick-model").value.trim(),
-      deep_model: $("#deep-model").value.trim(),
+      quick_model: quickModel,
+      deep_model: deepModel,
       backend_url: $("#backend-url").value.trim(),
     };
     const meta = await api("/api/settings", payload);
@@ -260,6 +347,46 @@ async function saveSettings(event) {
     inlineError("#settings-error", e.message);
   } finally {
     $("#save-settings").disabled = false;
+  }
+}
+async function refreshModels() {
+  const button = $("#refresh-models");
+  const providerSelect = $("#provider");
+  const provider = $("#provider").value;
+  button.disabled = true;
+  providerSelect.disabled = true;
+  text($("#models-feedback"), "正在读取账户可用模型…");
+  try {
+    const result = await api(
+      `/api/models?provider=${encodeURIComponent(provider)}`,
+    );
+    if (!result.models?.quick?.length || !result.models?.deep?.length) {
+      throw new Error("服务没有返回可用模型，请稍后重试。");
+    }
+    if (result.provider && result.provider !== provider) {
+      throw new Error("服务返回了其他模型服务的结果，请重试。");
+    }
+    const currentProvider = providerInfo(provider);
+    currentProvider.models = {
+      ...currentProvider.models,
+      quick: result.models.quick,
+      deep: result.models.deep,
+    };
+    for (const tier of ["quick", "deep"]) {
+      const selected = $(`#${tier}-model`).value;
+      const custom = $(`#${tier}-model-custom`).value;
+      setModelSelect(
+        tier,
+        selected === CUSTOM_MODEL_VALUE && !custom.trim() ? "" : selected,
+        custom,
+      );
+    }
+    text($("#models-feedback"), "已更新当前账户可用的模型。");
+  } catch (error) {
+    text($("#models-feedback"), error.message);
+  } finally {
+    button.disabled = false;
+    providerSelect.disabled = false;
   }
 }
 function showView(view) {
@@ -291,6 +418,7 @@ function newResearch() {
   state.tabSignature = null;
   state.eventsSignature = "";
   $("#ticker").value = "";
+  assetChanged(true);
   $("#analysis-date").value = localDate();
   inlineError("#form-error", "");
   renderRun();
@@ -300,7 +428,6 @@ function newResearch() {
 function syncForm(config) {
   $("#ticker").value = config.ticker;
   $("#analysis-date").value = config.date;
-  $("#asset-type").value = config.asset_type;
   $$("input[name=analysts]").forEach(
     (c) => (c.checked = config.analysts.includes(c.value)),
   );
@@ -316,11 +443,23 @@ function setRounds(rounds) {
   });
 }
 function assetChanged(shouldCheck = true) {
-  const crypto = $("#asset-type").value === "crypto";
+  const crypto = inferAssetType($("#ticker").value) === "crypto";
   const fundamental = $("input[value=fundamentals]");
-  fundamental.disabled = crypto;
-  if (crypto) fundamental.checked = false;
-  else if (shouldCheck) fundamental.checked = true;
+  if (crypto) {
+    fundamental.checked = false;
+    fundamental.disabled = true;
+    text($("#asset-hint"), "已识别为加密资产，已关闭公司基本面分析。");
+  } else {
+    const wasDisabled = fundamental.disabled;
+    fundamental.disabled = false;
+    if (wasDisabled && shouldCheck) fundamental.checked = true;
+    text(
+      $("#asset-hint"),
+      $("#ticker").value.trim()
+        ? "将自动识别标的类型，并选择相应的研究方式。"
+        : "输入代码后自动识别标的类型，无需选择资产类型。",
+    );
+  }
 }
 async function startAnalysis(event) {
   event.preventDefault();
@@ -332,7 +471,6 @@ async function startAnalysis(event) {
   const payload = {
     ticker: $("#ticker").value.trim(),
     date: $("#analysis-date").value,
-    asset_type: $("#asset-type").value,
     analysts: $$("input[name=analysts]:checked").map((i) => i.value),
     rounds: state.rounds,
     language: "Chinese",
@@ -624,6 +762,15 @@ function renderRun() {
   }
   updateElapsed();
   updateStart();
+  renderVisuals();
+}
+function renderVisuals() {
+  if (typeof window === "undefined") return;
+  window.TradingVisuals?.render?.({
+    run: state.run,
+    runs: state.runs,
+    labels: state.meta?.labels || {},
+  });
 }
 function updateElapsed() {
   const r = state.run;
@@ -796,6 +943,7 @@ function renderHistory() {
   });
   if (focusedRunId && runs.some((run) => run.id === focusedRunId))
     holder.querySelector(`[data-run-id="${focusedRunId}"]`)?.focus();
+  renderVisuals();
 }
 async function refreshRuns() {
   const requestVersion = ++runsRequestVersion;
@@ -928,9 +1076,14 @@ async function init() {
   $("#analysis-form").addEventListener("submit", startAnalysis);
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#provider").addEventListener("change", () => settingsProvider(true));
-  $("#asset-type").addEventListener("change", () => assetChanged());
+  $("#ticker").addEventListener("input", () => assetChanged());
   $("#history-search").addEventListener("input", renderHistory);
-  ["#configure-model", "#settings-nav", "#settings-avatar"].forEach(
+  [
+    "#configure-model",
+    "#research-settings",
+    "#settings-nav",
+    "#settings-avatar",
+  ].forEach(
     (id) =>
       ($(id).onclick = () => {
         if (state.meta) openSettings();
@@ -952,11 +1105,16 @@ async function init() {
   $$("[data-rounds]").forEach(
     (b) => (b.onclick = () => setRounds(Number(b.dataset.rounds))),
   );
+  ["quick", "deep"].forEach((tier) => {
+    $(`#${tier}-model`).addEventListener("change", () =>
+      setModelSelect(tier, $(`#${tier}-model`).value),
+    );
+  });
+  $("#refresh-models").addEventListener("click", refreshModels);
   $$("[data-ticker]").forEach(
     (b) =>
       (b.onclick = () => {
         $("#ticker").value = b.dataset.ticker;
-        $("#asset-type").value = "stock";
         assetChanged();
         $("#ticker").focus();
       }),
@@ -1016,6 +1174,9 @@ if (typeof module !== "undefined" && module.exports)
     reportTabTarget,
     reportRenderKey,
     reportPlaceholder,
+    inferAssetType,
+    modelChoices,
+    CUSTOM_MODEL_VALUE,
     api,
     selectRun,
     state,

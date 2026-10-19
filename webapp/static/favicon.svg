@@ -1,1 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="18" fill="#0d302b"/><path d="m13 40 12-13 10 7 16-18M41 16h10v10" fill="none" stroke="#9adeb5" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="TradingAgents">
+  <defs>
+    <linearGradient id="frame" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#28241e"/>
+      <stop offset="1" stop-color="#161514"/>
+    </linearGradient>
+    <linearGradient id="stroke" x1="0" x2="1" y1="1" y2="0">
+      <stop offset="0" stop-color="#cbb58c"/>
+      <stop offset="1" stop-color="#e3d7bf"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#frame)" stroke="#5a5141" stroke-width="2"/>
+  <path d="M12 43h9l8-12 8 6 14-19" fill="none" stroke="url(#stroke)" stroke-linecap="round" stroke-linejoin="round" stroke-width="4.5"/>
+  <path d="M42 18h9v9" fill="none" stroke="#e3d7bf" stroke-linecap="round" stroke-linejoin="round" stroke-width="4.5"/>
+  <circle cx="21" cy="43" r="2.5" fill="#c9ad79"/>
+</svg>

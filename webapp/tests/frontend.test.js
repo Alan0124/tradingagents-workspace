@@ -4,6 +4,9 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
   api,
+  CUSTOM_MODEL_VALUE,
+  inferAssetType,
+  modelChoices,
   reportPlaceholder,
   reportRenderKey,
   reportTabTarget,
@@ -84,5 +87,43 @@ test("API errors show the server message", async () => {
     await assert.rejects(api("/api/settings", {}), /配置无效/);
   } finally {
     global.fetch = originalFetch;
+  }
+});
+
+test("asset hints recognize normalized crypto pairs without an asset selector", () => {
+  assert.equal(inferAssetType("BTC-USD"), "crypto");
+  assert.equal(inferAssetType("BTCUSDT"), "crypto");
+  assert.equal(inferAssetType("SOL-USDC"), "crypto");
+  assert.equal(inferAssetType("AAPL"), "stock");
+  assert.equal(inferAssetType("XAUUSD"), "stock");
+});
+
+test("model choices keep catalog entries and leave custom selection explicit", () => {
+  const previousMeta = state.meta;
+  state.meta = {
+    providers: [
+      {
+        id: "openai",
+        models: {
+          quick: [
+            { label: "Fast model", id: "fast-model" },
+            { label: "Duplicate label", id: "fast-model" },
+            { label: "Custom model ID", id: "custom" },
+          ],
+          deep: [{ label: "Saved model", id: "saved-deep" }],
+        },
+      },
+    ],
+  };
+  try {
+    assert.deepEqual(modelChoices("openai", "quick"), [
+      { label: "Fast model", id: "fast-model" },
+    ]);
+    assert.deepEqual(modelChoices("openai", "deep"), [
+      { label: "Saved model", id: "saved-deep" },
+    ]);
+    assert.notEqual(CUSTOM_MODEL_VALUE, "custom");
+  } finally {
+    state.meta = previousMeta;
   }
 });

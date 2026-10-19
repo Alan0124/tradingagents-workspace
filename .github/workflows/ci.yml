@@ -77,6 +77,8 @@ jobs:
         with:
           node-version: "22"
       - name: Check JavaScript
-        run: node --check webapp/static/app.js
+        run: |
+          node --check webapp/static/app.js
+          node --check webapp/static/visuals.js
       - name: Frontend behavior tests
         run: node --test webapp/tests/frontend*.test.*

@@ -53,7 +53,7 @@ def main():
             CFBundleName="TradingAgents 投研台",
             CFBundleDisplayName="TradingAgents 投研台",
             CFBundleIdentifier="local.tradingagents.workspace",
-            CFBundleShortVersionString="1.1.0",
+            CFBundleShortVersionString="2.0.0",
         )
         info_path.write_bytes(plistlib.dumps(info))
         subprocess.run(["xattr", "-cr", str(app)], check=True)

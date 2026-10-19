@@ -78,10 +78,10 @@ class WorkspaceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_run(c, False)
         c = config()
-        c["asset_type"] = "crypto"
-        c["analysts"] = ["fundamentals"]
-        with self.assertRaises(ValueError):
-            validate_run(c, False)
+        c.update(ticker="BTC-USD", asset_type="stock", analysts=["market", "fundamentals"])
+        chosen = validate_run(c, False)
+        self.assertEqual(chosen["asset_type"], "crypto")
+        self.assertEqual(chosen["analysts"], ["market"])
         c = config()
         c["provider"] = "openai"
         with (
@@ -275,6 +275,20 @@ class WorkspaceTests(unittest.TestCase):
         reloaded = Store(self.tmp.name).get(run["id"])
         self.assertEqual(reloaded, finished)
         self.assertNotIn("api_key", json.dumps(reloaded))
+
+    def test_worker_protocol_preserves_chinese_with_legacy_parent_encoding(self):
+        script = (
+            "import sys;sys.stdin.readline();from webapp.worker import emit;"
+            "emit('report', key='final_trade_decision', text='中文研究结论');"
+            "emit('result', rating='Hold')"
+        )
+        with patch.dict(os.environ, {"PYTHONIOENCODING": "ascii"}):
+            self.assertEqual(worker_environment(config())["PYTHONIOENCODING"], "utf-8")
+            self.manager = Manager(self.store, [sys.executable, "-u", "-c", script])
+            run = self.manager.start(config())
+            finished = wait_finished(self.store, run["id"])
+        self.assertEqual(finished["status"], "completed")
+        self.assertEqual(finished["reports"]["final_trade_decision"], "中文研究结论")
 
     def test_cancellation_and_single_run_lock(self):
         self.manager = Manager(

@@ -247,16 +247,30 @@ def metadata():
     providers = []
     for key, label in PROVIDERS.items():
         models = MODEL_OPTIONS.get(key, MODEL_OPTIONS.get("openai", {}) if key == "chatgpt" else {})
+        model_choices = {
+            tier: [
+                {"label": name, "id": model_id}
+                for name, model_id in options
+                if model_id != "custom"
+            ]
+            for tier, options in models.items()
+        }
+        # The selected IDs are user-provided values, so they remain available
+        # in the offline catalog even when a provider's live list is not loaded.
+        if preferences.get("provider") == key:
+            for tier, field in (("quick", "quick_model"), ("deep", "deep_model")):
+                model_id = preferences.get(field, "").strip()
+                if model_id and all(item["id"] != model_id for item in model_choices.get(tier, [])):
+                    model_choices.setdefault(tier, []).insert(
+                        0, {"label": f"已保存 · {model_id}", "id": model_id}
+                    )
         providers.append(
             {
                 "id": key,
                 "name": label,
                 "configured": bool(values.get(keys.get(key, ""))),
                 "key_required": bool(keys.get(key)) and key != "openai_compatible",
-                "models": {
-                    tier: [{"label": a, "id": b} for a, b in options if b != "custom"]
-                    for tier, options in models.items()
-                },
+                "models": model_choices,
             }
         )
     return {
@@ -267,6 +281,40 @@ def metadata():
         "chatgpt_account": chatgpt_account(),
         "labels": LABELS,
         "app": "tradingagents-workspace",
+    }
+
+
+def refresh_models(provider):
+    """Fetch current account-visible options for a provider on explicit request."""
+    if provider != "chatgpt":
+        raise ValueError("目前仅支持刷新 ChatGPT 订阅模型列表。")
+    if not chatgpt_account():
+        raise PermissionError("请先登录 ChatGPT，再刷新订阅模型列表。")
+
+    from tradingagents.llm_clients.chatgpt_auth import ChatGPTAuthError, list_models
+
+    try:
+        listed = list_models()
+    except ChatGPTAuthError:
+        raise PermissionError("ChatGPT 登录已失效，请重新登录后刷新模型列表。") from None
+    except Exception:
+        raise RuntimeError("无法读取 ChatGPT 订阅模型，请检查网络或重新登录后重试。") from None
+
+    choices = []
+    seen = set()
+    for name, model_id in listed:
+        if not isinstance(model_id, str) or not model_id or model_id in seen:
+            continue
+        if len(model_id) > 180 or re.search(r"[\x00-\x1f]", model_id):
+            continue
+        label = name.strip() if isinstance(name, str) else ""
+        choices.append({"label": label or model_id, "id": model_id})
+        seen.add(model_id)
+    if not choices:
+        raise RuntimeError("当前 ChatGPT 账号没有返回可用于 API 的模型。请检查订阅权限后重试。")
+    return {
+        "provider": provider,
+        "models": {"quick": choices, "deep": choices},
     }
 
 
@@ -334,13 +382,32 @@ def validate_url(url):
         raise ValueError("接口地址需为不含密钥或查询参数的 http(s) URL。")
 
 
+def infer_asset_type(ticker):
+    """Classify Yahoo crypto pairs using the same suffix rules as the CLI."""
+    try:
+        from tradingagents.dataflows.symbols import normalize_symbol
+
+        canonical = normalize_symbol(ticker)
+    except Exception:
+        canonical = ticker
+    if isinstance(canonical, str) and canonical.upper().endswith(
+        ("-USD", "-USDT", "-USDC", "-BTC", "-ETH")
+    ):
+        return "crypto"
+    return "stock"
+
+
 def validate_run(body, check_credentials=True):
     if not isinstance(body, dict):
         raise ValueError("请求格式不正确。")
     if not isinstance(body.get("ticker"), str):
         raise ValueError("请输入有效的股票代码，例如 AAPL、0700.HK 或 600519.SS。")
     ticker = body["ticker"].strip().upper()
-    if not re.fullmatch(r"[A-Z0-9^][A-Z0-9.^=\-]{0,30}", ticker) or ".." in ticker:
+    if (
+        len(ticker) > 31
+        or not re.fullmatch(r"[A-Z0-9^][A-Z0-9.^=\-]{0,30}\+?", ticker)
+        or ".." in ticker
+    ):
         raise ValueError("请输入有效的股票代码，例如 AAPL、0700.HK 或 600519.SS。")
     date = body.get("date")
     if not isinstance(date, str):
@@ -357,16 +424,26 @@ def validate_run(body, check_credentials=True):
     analysts = body.get("analysts")
     if (
         not isinstance(analysts, list)
-        or not analysts
         or len(analysts) > len(ANALYSTS)
         or any(not isinstance(a, str) or a not in ANALYSTS for a in analysts)
     ):
         raise ValueError("请至少选择一位分析师。")
-    asset_type = body.get("asset_type", "stock")
-    if not isinstance(asset_type, str) or asset_type not in ("stock", "crypto"):
+    legacy_asset_type = body.get("asset_type")
+    if "asset_type" in body and (
+        not isinstance(legacy_asset_type, str) or legacy_asset_type not in ("stock", "crypto")
+    ):
         raise ValueError("资产类型不正确。")
-    if asset_type == "crypto" and "fundamentals" in analysts:
-        raise ValueError("加密资产不支持公司基本面分析，请取消基本面分析师。")
+    asset_type = infer_asset_type(ticker)
+    # Keep accepting the legacy field so older clients/configurations remain
+    # valid, but route from the normalized ticker so a stale selection cannot
+    # send a crypto pair through company-fundamentals analysis.
+    selected_analysts = list(dict.fromkeys(analysts))
+    if asset_type == "crypto":
+        selected_analysts = [a for a in selected_analysts if a != "fundamentals"]
+        if not selected_analysts:
+            raise ValueError("加密资产不支持公司基本面分析，请至少选择市场、新闻或情绪分析师。")
+    elif not selected_analysts:
+        raise ValueError("请至少选择一位分析师。")
     models_raw = {k: body.get(k, "") for k in ("quick_model", "deep_model")}
     if any(not isinstance(v, str) for v in models_raw.values()):
         raise ValueError("请填写快速模型和深度模型的 ID。")
@@ -398,7 +475,7 @@ def validate_run(body, check_credentials=True):
         "ticker": ticker,
         "date": date,
         "provider": provider,
-        "analysts": list(dict.fromkeys(analysts)),
+        "analysts": selected_analysts,
         "asset_type": asset_type,
         "rounds": rounds,
         "backend_url": endpoint,
@@ -554,6 +631,7 @@ def worker_environment(config):
     # tradingagents imports dotenv at package import; prevent it from adding
     # all unrelated keys back into this process after the allowlist is applied.
     env["PYTHON_DOTENV_DISABLED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     provider_keys = {name for name in mapping.values() if name}
     secret_names = provider_keys | DATA_API_KEYS | OPTIONAL_SERVICE_KEYS | OTHER_SECRET_KEYS
     secret_names |= {
@@ -638,6 +716,7 @@ class Manager:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    encoding="utf-8",
                     bufsize=1,
                     **process_group_options(),
                 )
