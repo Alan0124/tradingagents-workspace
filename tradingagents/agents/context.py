@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from tradingagents.dataflows.date_window import is_historical
+from tradingagents.dataflows.evidence import current_ledger
 from tradingagents.dataflows.vendors.yahoo.fundamentals import get_company_profile
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,9 @@ def build_instrument_context(
     instrument_label = "asset" if is_crypto else "instrument"
     context = (
         f"The {instrument_label} to analyze is `{ticker}`. "
+        "Preserve supplied Evidence E- identifiers when citing numeric facts or events. "
+        "Repeated evidence IDs or URLs are the same source, not independent confirmation. "
+        "State data gaps explicitly; missing data alone is not a bearish or bullish signal. "
         "The tools serve this instrument; refer to it by this exact ticker in every report and recommendation, "
         "preserving any exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`, `-USD`)."
     )
@@ -179,12 +183,23 @@ def get_instrument_context_from_state(state: Mapping[str, Any]) -> str:
     consumer is never forced to make a yfinance call mid-graph.
     """
     context = state.get("instrument_context")
-    if isinstance(context, str) and context.strip():
-        return context
-    return build_instrument_context(
-        str(state["company_of_interest"]),
-        state.get("asset_type", "stock"),
-    )
+    if not isinstance(context, str) or not context.strip():
+        context = build_instrument_context(
+            str(state["company_of_interest"]),
+            state.get("asset_type", "stock"),
+        )
+    ledger = current_ledger()
+    if ledger is not None:
+        quality = ledger.quality()
+        if quality["evidence_count"]:
+            statuses = ", ".join(f"{key}={value['status']}" for key, value in quality["reports"].items())
+            context += (
+                f"\nAcquisition receipts (not model opinions): {statuses}. "
+                "An available payload is not proof of full coverage or independent confirmation. "
+                "Unavailable evidence cannot support numerical or directional claims. "
+                "Preserve Evidence E- identifiers and do not count a repeated ID or URL twice."
+            )
+    return context
 
 
 def report_or_absent(text: str, source: str) -> str:

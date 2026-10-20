@@ -15,6 +15,15 @@ class ChinaWorkspaceTests(unittest.TestCase):
         class ConfigCaptured(Exception):
             pass
 
+        class Stats:
+            def get_stats(self):
+                return {
+                    "llm_calls": 0,
+                    "tool_calls": 0,
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                }
+
         captured = {}
 
         class Graph:
@@ -43,7 +52,7 @@ class ChinaWorkspaceTests(unittest.TestCase):
                     execute(
                         {"config": request, "directory": directory},
                         graph_class=Graph,
-                        stats_class=lambda: None,
+                        stats_class=Stats,
                     )
                 self.assertEqual(
                     captured["tool_vendors"]["get_news"], override.get("get_news", "eastmoney")

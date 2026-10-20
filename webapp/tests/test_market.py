@@ -51,6 +51,9 @@ class MarketTests(unittest.TestCase):
             ],
         )
         self.assertEqual(original["symbol"], "BTC-USD")
+        self.assertEqual(original["price_basis"], market.PRICE_BASIS)
+        self.assertIn("not a raw trade tape", original["price_basis_note"])
+        self.assertIn("point-in-time", original["price_basis_note"])
         kwargs = download.call_args.kwargs
         self.assertEqual(kwargs["tickers"], "BTC-USD")
         self.assertEqual(kwargs["end"], "2026-01-11")
@@ -62,6 +65,20 @@ class MarketTests(unittest.TestCase):
         self.assertFalse(kwargs["threads"])
         self.assertFalse(kwargs["auto_adjust"])
         download.assert_called_once()
+
+    def test_chart_uses_close_when_adj_close_differs(self):
+        as_of = date(2026, 1, 10)
+        frame = pd.DataFrame(
+            {"Close": [50.0], "Adj Close": [37.5]},
+            index=[as_of],
+        )
+        with patch.object(market.yf, "download", return_value=frame) as download:
+            result = market.get_market_history({"ticker": "AAPL", "date": as_of.isoformat()})
+
+        self.assertEqual(result["series"], [{"date": as_of.isoformat(), "close": 50.0}])
+        self.assertEqual(result["price_basis"], market.PRICE_BASIS)
+        self.assertIn("Adj Close is not", result["price_basis_note"])
+        self.assertFalse(download.call_args.kwargs["auto_adjust"])
 
     def test_empty_history_is_cached(self):
         config = {"ticker": "AAPL", "date": "2026-01-10"}

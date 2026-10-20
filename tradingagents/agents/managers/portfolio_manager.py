@@ -20,6 +20,8 @@ from tradingagents.agents.context import (
 from tradingagents.agents.rating import parse_rating
 from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
 from tradingagents.agents.structured import NO_EXTERNAL_TOOLS, bind_structured, invoke_structured
+from tradingagents.dataflows.config import get_config
+from tradingagents.dataflows.evidence import current_ledger
 
 _MISSING_PRICE_TARGET_LINE = re.compile(
     r"^\s*(?:[-*•]\s*)?(?:\*\*|__)?\s*Price\s+Target\s*(?:\*\*|__)?\s*:"
@@ -47,6 +49,20 @@ def create_portfolio_manager(llm):
     structured_llm = bind_structured(llm, PortfolioDecision, "Portfolio Manager")
 
     def portfolio_manager_node(state) -> dict:
+        ledger = current_ledger()
+        if ledger is not None and ledger.quality()["status"] == "unavailable":
+            chinese = "chinese" in get_config().get("output_language", "English").lower()
+            report = (
+                "**Rating**: REVIEW\n\n资料不足，暂不评级。\n\n"
+                "所选分析维度均未获得可用数据，不能据此给出买卖方向、情绪分数或目标价。"
+                "请先补充数据来源，再重新评估。已保留获取结果与缺失原因供核对。"
+                if chinese else
+                "**Rating**: REVIEW\n\nInsufficient Data — no directional rating.\n\n"
+                "None of the selected dimensions returned usable evidence. Do not infer a trade, "
+                "sentiment score or price target from missing data. Acquisition receipts and "
+                "coverage gaps are retained for review."
+            )
+            return {"final_trade_decision": report, "final_rating": "REVIEW"}
         instrument_context = get_instrument_context_from_state(state)
         portfolio_context = get_portfolio_context_from_state(state)
 

@@ -1033,8 +1033,10 @@ def test_a_longer_window_asks_for_enough_price_history(monkeypatch):
         def __init__(self, symbol):
             self.symbol = symbol
 
-        def history(self, start, end):
+        def history(self, start, end, **kwargs):
             asked["start"], asked["end"] = start, end
+            asked["auto_adjust"] = kwargs.get("auto_adjust")
+            asked["actions"] = kwargs.get("actions")
             import pandas as pd
             days = pd.bdate_range(start, end)
             return pd.DataFrame({"Close": range(len(days))}, index=days)
@@ -1044,6 +1046,8 @@ def test_a_longer_window_asks_for_enough_price_history(monkeypatch):
     raw, alpha, days, resolved = settlement.fetch_returns("NVDA", "2026-06-01", 21, benchmark="SPY")
 
     assert days == 21 and resolved is not None, (raw, alpha, days, resolved)
+    assert asked["auto_adjust"] is False
+    assert asked["actions"] is False
 
 
 @pytest.mark.unit

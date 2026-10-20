@@ -6,6 +6,8 @@ from tradingagents.dataflows.errors import (
     VendorNotConfiguredError,
     VendorUnavailableError,
 )
+from tradingagents.dataflows.evidence import capture_result, current_ledger
+from tradingagents.dataflows.vendors import eastmoney_financials
 from tradingagents.dataflows.vendors.alpha_vantage import (
     get_balance_sheet as get_alpha_vantage_balance_sheet,
     get_cashflow as get_alpha_vantage_cashflow,
@@ -108,20 +110,24 @@ VENDOR_METHODS = {
     },
     # fundamental_data
     "get_fundamentals": {
+        "eastmoney": eastmoney_financials.get_fundamentals,
         "alpha_vantage": get_alpha_vantage_fundamentals,
         "yfinance": get_yfinance_fundamentals,
     },
     "get_balance_sheet": {
+        "eastmoney": eastmoney_financials.get_balance_sheet,
         "alpha_vantage": get_alpha_vantage_balance_sheet,
         "sec_edgar": get_sec_edgar_balance_sheet,
         "yfinance": get_yfinance_balance_sheet,
     },
     "get_cashflow": {
+        "eastmoney": eastmoney_financials.get_cashflow,
         "alpha_vantage": get_alpha_vantage_cashflow,
         "sec_edgar": get_sec_edgar_cashflow,
         "yfinance": get_yfinance_cashflow,
     },
     "get_income_statement": {
+        "eastmoney": eastmoney_financials.get_income_statement,
         "alpha_vantage": get_alpha_vantage_income_statement,
         "sec_edgar": get_sec_edgar_income_statement,
         "yfinance": get_yfinance_income_statement,
@@ -200,6 +206,29 @@ def no_data_available(error: NoMarketDataError) -> str:
 
 
 def route_to_vendor(method: str, *args, **kwargs):
+    ledger = current_ledger()
+    if ledger is None:
+        return _route_to_vendor(method, *args, **kwargs)
+    vendors = get_vendor(get_category_for_method(method), method)
+
+    def fetch():
+        try:
+            result = _route_to_vendor(method, *args, **kwargs)
+        except Exception as exc:
+            # Store the class, never credentials or an arbitrary exception URL.
+            capture_result(method, vendors, args, kwargs,
+                           f"DATA_UNAVAILABLE: {type(exc).__name__}; request failed")
+            raise
+        # Successful providers attach their actual source below. A final
+        # no-data sentinel still needs a receipt for the failed coverage.
+        if isinstance(result, str) and result.startswith("[Evidence E-"):
+            return result
+        return capture_result(method, vendors, args, kwargs, result)
+
+    return ledger.memoize([method, vendors, args, kwargs], fetch)
+
+
+def _route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support."""
     category = get_category_for_method(method)
     vendor_config = get_vendor(category, method)
@@ -235,7 +264,8 @@ def route_to_vendor(method: str, *args, **kwargs):
         impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
 
         try:
-            return impl_func(*args, **kwargs)
+            result = impl_func(*args, **kwargs)
+            return capture_result(method, vendor, args, kwargs, result, vendor_chain=vendor_config)
         except VendorUnavailableError as e:
             logger.warning("Vendor %r unavailable for %s: %s; trying next vendor.", vendor, method, e)
             # Kept so an all-unavailable chain can say the vendor was the

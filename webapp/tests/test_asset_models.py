@@ -31,10 +31,19 @@ def config(**overrides):
 class AssetInferenceTests(unittest.TestCase):
     def test_cfd_alias_remains_accepted(self):
         chosen = validate_run(config(ticker="XAUUSD+"), check_credentials=False)
-        self.assertEqual(chosen["ticker"], "XAUUSD+")
+        self.assertEqual(chosen["ticker"], "GC=F")
         for ticker in ("A+APL", "AAPL++", "A" * 32):
             with self.subTest(ticker=ticker), self.assertRaises(ValueError):
                 validate_run(config(ticker=ticker), check_credentials=False)
+
+    def test_mainland_aliases_share_a_canonical_ticker(self):
+        aliases = ("600519", "SH600519", "600519.SH", "600519.SS")
+        chosen = [
+            validate_run(config(ticker=ticker), check_credentials=False)
+            for ticker in aliases
+        ]
+        self.assertEqual({item["ticker"] for item in chosen}, {"600519.SS"})
+        self.assertEqual({item["asset_type"] for item in chosen}, {"stock"})
 
     def test_ticker_infers_asset_type_without_request_field(self):
         self.assertEqual(infer_asset_type("BTC-USD"), "crypto")

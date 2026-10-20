@@ -20,8 +20,10 @@ reads the same across providers.
 """
 
 import re
+from collections import Counter
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -36,6 +38,7 @@ from tradingagents.agents.structured import (
 )
 from tradingagents.agents.tools import get_news
 from tradingagents.dataflows.config import get_config
+from tradingagents.dataflows.evidence import record_source
 from tradingagents.dataflows.vendors.reddit import (
     CRYPTO_SUBREDDITS,
     DEFAULT_SUBREDDITS,
@@ -43,6 +46,11 @@ from tradingagents.dataflows.vendors.reddit import (
     subreddits_for,
 )
 from tradingagents.dataflows.vendors.stocktwits import fetch_stocktwits_messages
+
+_EVIDENCE_RECEIPT = re.compile(
+    r"\A\[Evidence (?P<id>E-[0-9a-f]{16}); source=[^;\]\r\n]+; "
+    r"as_of=[^\]\r\n]+\]\r?\n"
+)
 
 
 def _seven_days_back(trade_date: str) -> str:
@@ -91,9 +99,127 @@ def _item_date(item: dict) -> str:
     # Prefer a normalized calendar date when the vendor provides an ISO date or
     # timestamp; retain other source date formats rather than dropping them.
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).date().isoformat()
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(ZoneInfo("Asia/Shanghai"))
+        return parsed.date().isoformat()
     except ValueError:
         return value[:10] if len(value) >= 10 else value
+
+
+def _source_category_counts(items: list[dict]) -> dict[str, int]:
+    counts = Counter(
+        str(item.get("source_category") or "unclassified")
+        for item in items
+        if isinstance(item, dict)
+    )
+    return dict(sorted(counts.items()))
+
+
+def _china_evidence_fields(source_key: str, source: dict) -> dict:
+    """Derive factual evidence metadata from source records, never model prose."""
+    source_id = f"eastmoney.{source_key}"
+    items = _substantive_items(source)
+    raw_status = str(source.get("status") or "").strip().lower()
+    if raw_status == "unavailable":
+        status = "unavailable"
+    elif raw_status in {"ok", "empty"}:
+        if not items:
+            status = "unavailable"
+        elif len(items) <= 2:
+            status = "sparse"
+        else:
+            status = "available"
+    else:
+        status = "unknown"
+
+    dates = sorted(value for value in (_item_date(item) for item in items) if value)
+    observed_dates = {"start": dates[0] if dates else None, "end": dates[-1] if dates else None}
+    note = str(source.get("note") or "").strip()
+    if raw_status == "empty" and not items:
+        empty_caveat = "查询成功，但有限返回页中没有匹配样本；这不能证明请求窗口内没有内容。"
+        note = f"{empty_caveat} {note}".strip()
+    if not note:
+        note = "东方财富返回的是有限页面样本，不能证明覆盖完整请求窗口。"
+    return {
+        "source": source_id,
+        "status": status,
+        "sample_count": len(items),
+        "observed_dates": observed_dates,
+        "coverage_caveat": note,
+    }
+
+
+def _record_china_evidence(sources: dict[str, dict]) -> list[dict]:
+    evidence = []
+    for source_key in ("news", "community"):
+        source = sources[source_key]
+        fields = _china_evidence_fields(source_key, source)
+        evidence_id = record_source(
+            "sentiment_report",
+            fields["source"],
+            source,
+            status=fields["status"],
+            sample_count=fields["sample_count"],
+            observed_dates=fields["observed_dates"],
+            coverage_caveat=fields["coverage_caveat"],
+        )
+        fields["evidence_id"] = evidence_id
+        evidence.append(fields)
+    return evidence
+
+
+def _cap_china_confidence(report: str, cap: str) -> str:
+    """Enforce the A-share evidence cap on structured and free-text reports."""
+    ranks = {"low": 0, "medium": 1, "high": 2}
+    cap = cap if cap in ranks else "low"
+    heading = re.compile(
+        r"(?im)^(?P<prefix>\s*(?:\*\*(?:Confidence|置信度)[:：]\*\*|(?:Confidence|置信度)\s*[:：])\s*)"
+        r"(?P<level>low|medium|moderate|high|低|中等|中|高)(?P<suffix>.*)$"
+    )
+
+    def replace_heading(match):
+        raw = match.group("level").lower()
+        level = {"低": "low", "中": "medium", "中等": "medium", "高": "high", "moderate": "medium"}.get(raw, raw)
+        if ranks[level] <= ranks[cap]:
+            return match.group(0)
+        chinese = "置信度" in match.group("prefix") or raw in {"低", "中", "中等", "高"}
+        display = {"low": "低", "medium": "中", "high": "高"}[cap] if chinese else cap.capitalize()
+        return f"{match.group('prefix')}{display}"
+
+    text = heading.sub(replace_heading, str(report or "").strip())
+    if not heading.search(str(report or "")):
+        language = str(get_config().get("output_language", "English")).strip().lower()
+        chinese = language in {"chinese", "中文", "简体中文", "繁體中文", "zh", "zh-cn", "zh-tw"}
+        heading_start = re.compile(
+            r"(?im)^\s*(?:\*\*(?:Confidence|置信度)[:：]\*\*|(?:Confidence|置信度)\s*[:：]).*$"
+        )
+        display = {"low": "低", "medium": "中", "high": "高"}[cap] if chinese else cap.capitalize()
+        if heading_start.search(text):
+            text = heading_start.sub(f"**Confidence:** {display}", text, count=1)
+        else:
+            text = f"**Confidence:** {display}\n\n{text}" if text else f"**Confidence:** {display}"
+
+    # Also constrain explicit confidence claims in a free-text narrative.
+    above_cap = r"high|medium|moderate" if cap == "low" else r"high"
+    display_claim = cap
+    text = re.sub(
+        rf"\b(?:{above_cap})\s+confidence\b",
+        f"{display_claim} confidence",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf"\bconfidence\s+is\s+(?:{above_cap})\b",
+        f"confidence is {display_claim}",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if cap == "low":
+        text = re.sub(r"(?:高|中等|中)置信度", "低置信度", text)
+    elif cap == "medium":
+        text = re.sub(r"高置信度", "中等置信度", text)
+    return text
 
 
 def _format_china_source(name: str, source: dict, start_date: str, end_date: str) -> str:
@@ -107,9 +233,15 @@ def _format_china_source(name: str, source: dict, start_date: str, end_date: str
         f"Source status: {status}",
         f"Substantive returned sample: {len(items)} item(s)",
         f"Observed item date range: {observed}",
+        "Returned source category counts: " + ", ".join(
+            f"{category}={count}" for category, count in _source_category_counts(items).items()
+        ) if items else "Returned source category counts: none",
         f"Requested window: {start_date} to {end_date}",
         "Coverage limit: this is the finite vendor-returned sample, not proof that the entire week was searched or archived.",
     ]
+    evidence_id = str(source.get("evidence_id") or "").strip()
+    if evidence_id:
+        lines.append(f"Evidence receipt: {evidence_id} (acquisition record only)")
     if note:
         lines.append(f"Vendor note: {note}")
     if items:
@@ -117,10 +249,14 @@ def _format_china_source(name: str, source: dict, start_date: str, end_date: str
         for index, item in enumerate(items, 1):
             date = _item_date(item) or "date unavailable"
             source_label = str(item.get("source") or "source label unavailable").strip()
+            source_category = str(item.get("source_category") or "unclassified").strip()
             title = str(item.get("title") or "").strip()
             body = str(item.get("text") or "").strip()
             url = str(item.get("url") or "").strip()
-            lines.append(f"{index}. Date: {date}; actual source label: {source_label}")
+            lines.append(
+                f"{index}. Date: {date}; actual source label: {source_label}; "
+                f"source category: {source_category}"
+            )
             if title:
                 lines.append(f"   Title: {title}")
             if body:
@@ -156,6 +292,8 @@ def _china_source_summary(news_source: dict, community_source: dict) -> str:
     ):
         items = _substantive_items(source)
         dates = sorted(date for date in (_item_date(item) for item in items) if date)
+        category_counts = _source_category_counts(items)
+        category_text = ", ".join(f"{category}={count}" for category, count in category_counts.items())
         if not dates:
             date_text = "日期未提供" if chinese else "dates unavailable"
         elif dates[0] == dates[-1]:
@@ -164,9 +302,15 @@ def _china_source_summary(news_source: dict, community_source: dict) -> str:
             date_text = f"{dates[0]} 至 {dates[-1]}" if chinese else f"{dates[0]} to {dates[-1]}"
         if chinese:
             label = "新闻" if key == "news" else "社区"
-            entries.append(f"{label}{len(items)}条（{date_text}）")
+            categories = f"；来源类别：{category_text}" if category_text else "；无已分类样本"
+            evidence_id = str(source.get("evidence_id") or "").strip()
+            receipt = f"；证据收据 {evidence_id}" if evidence_id else ""
+            entries.append(f"{label}{len(items)}条（{date_text}）{categories}{receipt}")
         else:
-            entries.append(f"{label}: {len(items)} item(s) ({date_text})")
+            categories = f"; source categories: {category_text}" if category_text else "; no classified samples"
+            evidence_id = str(source.get("evidence_id") or "").strip()
+            receipt = f"; evidence receipt {evidence_id}" if evidence_id else ""
+            entries.append(f"{label}: {len(items)} item(s) ({date_text}){categories}{receipt}")
     if chinese:
         return "**来源样本：** " + "；".join(entries) + "。以上为有限样本。"
     return "**Source sample:** " + "; ".join(entries) + ". These are finite samples."
@@ -174,7 +318,7 @@ def _china_source_summary(news_source: dict, community_source: dict) -> str:
 
 def _is_explicitly_missing(block: str) -> bool:
     """Recognize only clear fetcher sentinels, not arbitrary short strings."""
-    text = str(block or "").strip()
+    text = _strip_evidence_receipt(block).strip()
     if not text:
         return True
     lower = text.lower()
@@ -210,6 +354,41 @@ def _is_explicitly_missing(block: str) -> bool:
     return not remaining
 
 
+def _strip_evidence_receipt(block: str) -> str:
+    """Remove the one leading receipt line generated by the evidence ledger."""
+    return _EVIDENCE_RECEIPT.sub("", str(block or ""), count=1)
+
+
+def _evidence_receipt_id(block: str) -> str | None:
+    match = _EVIDENCE_RECEIPT.match(str(block or ""))
+    return match.group("id") if match else None
+
+
+def _with_evidence_receipt(block: str, evidence_id: str | None, source: str, as_of: str) -> str:
+    text = str(block or "")
+    if not evidence_id:
+        return text
+    return f"[Evidence {evidence_id}; source={source}; as_of={as_of}]\n{text}"
+
+
+def _record_international_social_source(source: str, block: str, as_of: str) -> str:
+    """Receipt an unwrapped social feed, then return an ID-tagged display copy."""
+    unavailable = _is_explicitly_missing(block)
+    evidence_id = record_source(
+        "sentiment_report",
+        source,
+        block,
+        status="unavailable" if unavailable else "sparse",
+        sample_count=None,
+        coverage_caveat=(
+            "No usable records were returned; this does not prove the requested period had no activity."
+            if unavailable else
+            "Finite recent feed sample; it does not establish complete coverage of the requested window."
+        ),
+    )
+    return _with_evidence_receipt(block, evidence_id, source, as_of)
+
+
 def _international_shortage_report(
     ticker: str, start_date: str, end_date: str, blocks: dict[str, str],
 ) -> str:
@@ -232,10 +411,16 @@ def _international_shortage_report(
         ]
         labels = {"News": "News", "StockTwits": "StockTwits", "Reddit": "Reddit"}
     for name, block in blocks.items():
+        raw_block = _strip_evidence_receipt(block)
         status = "unavailable" if re.search(
-            r"unavailable|data_unavailable|not among the newest", str(block or ""), re.IGNORECASE
+            r"unavailable|data_unavailable|not among the newest", raw_block, re.IGNORECASE
         ) else "empty"
-        lines.append(f"- **{labels[name]}:** `{status}`")
+        evidence_id = _evidence_receipt_id(block)
+        if evidence_id:
+            receipt = f"；证据收据 {evidence_id}" if chinese else f"; evidence receipt {evidence_id}"
+        else:
+            receipt = ""
+        lines.append(f"- **{labels[name]}:** `{status}`{receipt}")
     return "\n".join(lines)
 
 
@@ -283,6 +468,10 @@ def _shortage_report(ticker: str, start_date: str, end_date: str, sources: dict)
             }[status]
         note = str(source.get("note") or "").strip()
         suffix = f" — {note}" if note else ""
+        evidence_id = str(source.get("evidence_id") or "").strip()
+        if evidence_id:
+            receipt = f"；证据收据 {evidence_id}" if chinese else f"; evidence receipt {evidence_id}"
+            suffix = f"{suffix}{receipt}"
         lines.append(f"- **{status_labels[key]}:** `{status}`{suffix}")
     links = _report_links(sources)
     if links:
@@ -343,12 +532,19 @@ def create_sentiment_analyst(llm):
                 "status": "unavailable", "items": [], "note": "No community source result was returned."
             }
             sources = {"news": news_source, "community": community_source}
+            quality = _record_china_evidence(sources)
+            # Keep the source payload passed to the ledger immutable: receipt
+            # IDs are added only to copies rendered for the LLM and summary.
+            display_sources = {key: dict(source) for key, source in sources.items()}
+            for key, entry in zip(("news", "community"), quality, strict=True):
+                if entry.get("evidence_id"):
+                    display_sources[key]["evidence_id"] = entry["evidence_id"]
 
             # Do not turn missing coverage into a neutral score or a generic
             # five-section report. There is no useful model task until at least
             # one source has a substantive record.
             if not any(_substantive_items(source) for source in sources.values()):
-                report_text = _shortage_report(ticker, start_date, end_date, sources)
+                report_text = _shortage_report(ticker, start_date, end_date, display_sources)
                 return {
                     "messages": [AIMessage(content=report_text)],
                     "sentiment_report": report_text,
@@ -358,8 +554,8 @@ def create_sentiment_analyst(llm):
                 ticker=ticker,
                 start_date=start_date,
                 end_date=end_date,
-                news_source=news_source,
-                community_source=community_source,
+                news_source=display_sources["news"],
+                community_source=display_sources["community"],
             )
             prompt = ChatPromptTemplate.from_messages(
                 [
@@ -386,10 +582,14 @@ def create_sentiment_analyst(llm):
                 render_sentiment_report,
                 "Sentiment Analyst",
             )
+            confidence_cap = "medium" if any(
+                entry["status"] == "available" for entry in quality
+            ) else "low"
+            report_text = _cap_china_confidence(report_text, confidence_cap)
             report_text = (
                 report_text.rstrip()
                 + "\n\n"
-                + _china_source_summary(news_source, community_source)
+                + _china_source_summary(display_sources["news"], display_sources["community"])
             )
             return {
                 "messages": [AIMessage(content=report_text)],
@@ -406,15 +606,19 @@ def create_sentiment_analyst(llm):
         stocktwits_block = fetch_stocktwits_messages(
             ticker, limit=30, start_date=start_date, end_date=end_date, screen=screen
         )
+        stocktwits_display = _record_international_social_source(
+            "stocktwits", stocktwits_block, end_date
+        )
         subreddits = subreddits_for(ticker)
         reddit_block = fetch_reddit_posts(
             ticker, subreddits, start_date=start_date, end_date=end_date, screen=screen
         )
+        reddit_display = _record_international_social_source("reddit", reddit_block, end_date)
 
         international_sources = {
             "News": news_block,
-            "StockTwits": stocktwits_block,
-            "Reddit": reddit_block,
+            "StockTwits": stocktwits_display,
+            "Reddit": reddit_display,
         }
         if all(_is_explicitly_missing(block) for block in international_sources.values()):
             report_text = _international_shortage_report(
@@ -430,8 +634,8 @@ def create_sentiment_analyst(llm):
             start_date=start_date,
             end_date=end_date,
             news_block=news_block,
-            stocktwits_block=stocktwits_block,
-            reddit_block=reddit_block,
+            stocktwits_block=stocktwits_display,
+            reddit_block=reddit_display,
             subreddits=subreddits,
         )
 

@@ -16,6 +16,7 @@ class StatsCallbackHandler(BaseCallbackHandler):
         self.tool_calls = 0
         self.tokens_in = 0
         self.tokens_out = 0
+        self._usage_known_calls = 0
 
     def on_llm_start(
         self,
@@ -50,10 +51,40 @@ class StatsCallbackHandler(BaseCallbackHandler):
             if isinstance(message, AIMessage) and hasattr(message, "usage_metadata"):
                 usage_metadata = message.usage_metadata
 
-        if usage_metadata:
-            with self._lock:
-                self.tokens_in += usage_metadata.get("input_tokens", 0)
-                self.tokens_out += usage_metadata.get("output_tokens", 0)
+        if isinstance(usage_metadata, dict):
+            input_tokens = usage_metadata.get("input_tokens")
+            output_tokens = usage_metadata.get("output_tokens")
+            # Count a call as known only when the provider reported both sides
+            # of usage. In particular, explicit 0/0 is valid; missing fields,
+            # bools, negative values, and partial usage remain unknown.
+            if (
+                type(input_tokens) is int
+                and input_tokens >= 0
+                and type(output_tokens) is int
+                and output_tokens >= 0
+            ):
+                with self._lock:
+                    self.tokens_in += input_tokens
+                    self.tokens_out += output_tokens
+                    self._usage_known_calls += 1
+
+    @property
+    def usage_known_calls(self) -> int:
+        """Number of model calls with complete, provider-reported token usage."""
+        with self._lock:
+            return self._usage_known_calls
+
+    @property
+    def usage_reported(self) -> bool:
+        """Whether at least one model call reported complete token usage."""
+        with self._lock:
+            return self._usage_known_calls > 0
+
+    @property
+    def usage_complete(self) -> bool:
+        """Whether all started model calls (and at least one) reported usage."""
+        with self._lock:
+            return self.llm_calls > 0 and self._usage_known_calls == self.llm_calls
 
     def on_tool_start(
         self,
@@ -66,7 +97,7 @@ class StatsCallbackHandler(BaseCallbackHandler):
             self.tool_calls += 1
 
     def get_stats(self) -> dict[str, Any]:
-        """Return current statistics."""
+        """Return CLI-compatible numeric counters and reported token subtotals."""
         with self._lock:
             return {
                 "llm_calls": self.llm_calls,

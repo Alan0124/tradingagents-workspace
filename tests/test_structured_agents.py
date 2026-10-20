@@ -487,6 +487,58 @@ class TestSentimentAnalystAgent:
         llm.invoke.return_value = MagicMock(content=plain)
         assert create_sentiment_analyst(llm)(_make_sentiment_state())["sentiment_report"] == plain
 
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            pytest.param((401, "structured output unsupported"), id="authentication"),
+            pytest.param((429, "structured output unsupported"), id="rate-limit"),
+            pytest.param((503, "structured output unsupported"), id="server-error"),
+        ],
+    )
+    def test_provider_status_errors_do_not_trigger_a_second_request(self, failure):
+        class ProviderFailure(Exception):
+            def __init__(self, status_code, message):
+                super().__init__(message)
+                self.status_code = status_code
+
+        structured = MagicMock()
+        structured.invoke.side_effect = ProviderFailure(*failure)
+        llm = MagicMock()
+        llm.with_structured_output.return_value = structured
+        analyst = create_sentiment_analyst(llm)
+
+        with pytest.raises(ProviderFailure):
+            analyst(_make_sentiment_state())
+        llm.invoke.assert_not_called()
+
+    @pytest.mark.parametrize("failure", [TimeoutError("request timed out"),])
+    def test_transport_timeouts_do_not_trigger_a_second_request(self, failure):
+        structured = MagicMock()
+        structured.invoke.side_effect = failure
+        llm = MagicMock()
+        llm.with_structured_output.return_value = structured
+
+        with pytest.raises(TimeoutError):
+            create_sentiment_analyst(llm)(_make_sentiment_state())
+        llm.invoke.assert_not_called()
+
+    def test_explicit_unsupported_structured_format_falls_back_once(self):
+        class ProviderFailure(Exception):
+            status_code = 400
+
+        structured = MagicMock()
+        structured.invoke.side_effect = ProviderFailure(
+            "provider does not support JSON schema response_format"
+        )
+        llm = MagicMock()
+        llm.with_structured_output.return_value = structured
+        llm.invoke.return_value = MagicMock(content="Free text result")
+
+        result = create_sentiment_analyst(llm)(_make_sentiment_state())
+
+        assert result["sentiment_report"] == "Free text result"
+        llm.invoke.assert_called_once()
+
 
 @pytest.mark.unit
 @pytest.mark.parametrize("source", [

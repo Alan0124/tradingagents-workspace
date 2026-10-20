@@ -17,7 +17,11 @@ from stockstats import wrap
 
 from tradingagents.dataflows.errors import NoMarketDataError
 from tradingagents.dataflows.symbols import normalize_symbol
-from tradingagents.dataflows.vendors.yahoo.ohlcv import load_ohlcv
+from tradingagents.dataflows.vendors.yahoo.ohlcv import (
+    PRICE_BASIS,
+    PRICE_BASIS_CAVEAT,
+    load_ohlcv,
+)
 
 # A fixed, common indicator set so the snapshot is the same shape every run.
 DEFAULT_SNAPSHOT_INDICATORS: tuple[str, ...] = (
@@ -94,6 +98,8 @@ def build_verified_market_snapshot(
         f"## Verified market data snapshot for {symbol.upper()}",
         "",
         f"- Requested analysis date: {as_of_date}",
+        f"- Price basis: {PRICE_BASIS}",
+        f"- Price caveat: {PRICE_BASIS_CAVEAT}",
         f"- Latest trading row used: {latest_date}",
         "- Rows after the requested analysis date are excluded before verification.",
         "",

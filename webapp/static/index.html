@@ -107,6 +107,10 @@
                 <span data-icon="sliders"></span>
               </button>
             </div>
+            <details id="analysis-settings" open>
+              <summary class="settings-summary">
+                <span>研究参数</span><small id="setup-brief">标的、日期与模型</small>
+              </summary>
             <form id="analysis-form">
               <label for="ticker"
                 >研究标的 <span class="required">*</span></label
@@ -229,6 +233,7 @@
                 分析时访问所选模型与数据源
               </p>
             </form>
+            </details>
           </section>
           <div class="research-column">
             <section class="panel activity-panel">
@@ -239,7 +244,12 @@
                 </div>
                 <span class="status-tag" id="run-status">等待开始</span>
               </div>
-              <div id="pipeline" class="pipeline"></div>
+              <details id="process-details">
+                <summary class="process-summary">
+                  <span>研究流程</span><small>阶段与团队进展</small>
+                </summary>
+                <div id="pipeline" class="pipeline"></div>
+              </details>
               <div class="activity-footer">
                 <div>
                   <i id="activity-dot"></i
@@ -258,6 +268,106 @@
                   <p>开始研究后，工具调用与阶段进展将在这里显示。</p>
                 </div>
               </details>
+            </section>
+            <section id="research-overview" class="research-overview" hidden>
+              <section class="panel report-summary-panel" aria-label="结论摘要">
+                <div class="decision-banner" id="decision-banner" hidden>
+                  <div>
+                    <span>最终评级</span><strong id="decision-rating"></strong>
+                  </div>
+                  <div class="decision-summary-copy">
+                    <span>结论摘要</span>
+                    <p id="decision-quality-warning" class="decision-quality-warning" role="status" hidden></p>
+                    <p id="decision-summary">最终结论生成后，摘要会显示在这里。</p>
+                  </div>
+                  <button id="view-final-decision" type="button" class="button small ghost" hidden>
+                    查看完整结论
+                  </button>
+                </div>
+                <section id="evidence-quality" class="evidence-quality" aria-live="polite">
+                  <div class="evidence-quality-heading">
+                    <div>
+                      <span class="eyebrow">证据状态</span>
+                      <p id="evidence-summary">未验证</p>
+                    </div>
+                    <span id="evidence-status" class="quality-tag">未验证</span>
+                  </div>
+                  <div id="evidence-meta" class="evidence-meta"></div>
+                  <div id="evidence-report-rows" class="evidence-report-rows"></div>
+                  <a id="export-evidence" class="evidence-export" hidden>下载证据清单 JSON ↓</a>
+                </section>
+                <div id="run-error" class="run-error" role="alert" hidden></div>
+              </section>
+              <div class="stats-strip">
+                <div><span>模型调用</span><b id="stat-llm">—</b></div>
+                <div><span>数据工具调用</span><b id="stat-tools">—</b></div>
+                <div>
+                  <span>输入 / 输出 Token</span><b id="stat-tokens">—</b>
+                  <small id="stat-tokens-status"></small>
+                </div>
+                <div class="research-note">
+                  <span data-icon="info"></span>AI 辅助研究，不构成投资建议。
+                </div>
+              </div>
+            </section>
+            <section
+              id="research-visuals"
+              class="research-visuals"
+              aria-label="研究数据概览"
+            >
+              <div class="visuals-heading">
+                <div>
+                  <span class="eyebrow">OBSERVATORY</span>
+                  <h2>研究观测</h2>
+                </div>
+                <span class="tiny-label">基于实际数据与任务记录</span>
+              </div>
+              <section class="panel chart-card market-chart-card">
+                <div class="chart-heading">
+                  <h3>价格轨迹</h3>
+                  <button
+                    id="load-market-chart"
+                    type="button"
+                    class="button small ghost"
+                    disabled
+                  >
+                    加载行情
+                  </button>
+                </div>
+                <div id="market-chart" class="chart-region" aria-live="polite">
+                  <p class="chart-empty-state">
+                    选择或完成一份研究后，可加载截至分析日的历史收盘价。
+                  </p>
+                </div>
+                <div id="market-chart-source" class="chart-source">
+                  Yahoo Finance · 日线 · 报价口径加载后显示
+                </div>
+              </section>
+              <div class="visuals-grid">
+                <section class="panel chart-card">
+                  <div class="chart-heading">
+                    <h3>研究覆盖</h3>
+                    <span>报告章节</span>
+                  </div>
+                  <div id="coverage-chart" class="chart-region">
+                    <p class="chart-empty-state">
+                      研究开始后，展示所选分析维度的报告完成情况。
+                    </p>
+                  </div>
+                </section>
+                <section class="panel chart-card">
+                  <div class="chart-heading">
+                    <h3>模型用量</h3>
+                    <span>Token</span>
+                  </div>
+                  <div id="usage-chart" class="chart-region">
+                    <p class="chart-empty-state">
+                      模型返回使用量后，展示输入与输出的实际占比。
+                    </p>
+                  </div>
+                </section>
+              </div>
+              <div id="activity-chart" hidden></div>
             </section>
             <section class="panel report-panel">
               <div class="report-toolbar">
@@ -307,90 +417,19 @@
                 </div>
               </div>
               <div id="report-content" hidden>
-                <div class="decision-banner" id="decision-banner" hidden>
-                  <div>
-                    <span>最终评级</span><strong id="decision-rating"></strong>
-                  </div>
-                  <p>请结合报告中的论据与数据质量独立评估。</p>
+                <div class="report-layout">
+                  <aside class="report-index">
+                    <h3>报告目录</h3>
+                    <div
+                      id="report-tabs"
+                      role="tablist"
+                      aria-label="报告章节"
+                    ></div>
+                  </aside>
+                  <article id="report-body" class="markdown-body"></article>
                 </div>
-                <div id="run-error" class="run-error" role="alert" hidden></div>
-                <div
-                  id="report-tabs"
-                  role="tablist"
-                  aria-label="报告章节"
-                ></div>
-                <article id="report-body" class="markdown-body"></article>
               </div>
             </section>
-            <section
-              id="research-visuals"
-              class="research-visuals"
-              aria-label="研究数据概览"
-            >
-              <div class="visuals-heading">
-                <div>
-                  <span class="eyebrow">OBSERVATORY</span>
-                  <h2>研究观测</h2>
-                </div>
-                <span class="tiny-label">基于实际数据与任务记录</span>
-              </div>
-              <section class="panel chart-card market-chart-card">
-                <div class="chart-heading">
-                  <h3>价格轨迹</h3>
-                  <button
-                    id="load-market-chart"
-                    type="button"
-                    class="button small ghost"
-                    disabled
-                  >
-                    加载行情
-                  </button>
-                </div>
-                <div id="market-chart" class="chart-region" aria-live="polite">
-                  <p class="chart-empty-state">
-                    选择或完成一份研究后，可加载截至分析日的历史收盘价。
-                  </p>
-                </div>
-                <div id="market-chart-source" class="chart-source">
-                  Yahoo Finance · 日线 · 原始报价 · 缓存最长 15 分钟
-                </div>
-              </section>
-              <div class="visuals-grid">
-                <section class="panel chart-card">
-                  <div class="chart-heading">
-                    <h3>研究覆盖</h3>
-                    <span>报告章节</span>
-                  </div>
-                  <div id="coverage-chart" class="chart-region">
-                    <p class="chart-empty-state">
-                      研究开始后，展示所选分析维度的报告完成情况。
-                    </p>
-                  </div>
-                </section>
-                <section class="panel chart-card">
-                  <div class="chart-heading">
-                    <h3>模型用量</h3>
-                    <span>Token</span>
-                  </div>
-                  <div id="usage-chart" class="chart-region">
-                    <p class="chart-empty-state">
-                      模型返回使用量后，展示输入与输出的实际占比。
-                    </p>
-                  </div>
-                </section>
-              </div>
-              <div id="activity-chart" hidden></div>
-            </section>
-            <div class="stats-strip">
-              <div><span>模型调用</span><b id="stat-llm">—</b></div>
-              <div><span>数据工具调用</span><b id="stat-tools">—</b></div>
-              <div>
-                <span>输入 / 输出 Token</span><b id="stat-tokens">— / —</b>
-              </div>
-              <div class="research-note">
-                <span data-icon="info"></span>AI 辅助研究，不构成投资建议。
-              </div>
-            </div>
           </div>
         </div>
         <footer class="page-footer">
@@ -440,15 +479,21 @@
           <div id="history-empty" class="history-empty" role="status">
             还没有研究记录。开始第一份研究，结果会自动保存在这里。
           </div>
+          <div class="history-pagination">
+            <span id="history-load-status" role="status"></span>
+            <button id="history-load-more" type="button" class="button small ghost" hidden>
+              加载更多研究
+            </button>
+          </div>
         </div>
       </section>
     </main>
-    <dialog id="settings-dialog">
+    <dialog id="settings-dialog" aria-labelledby="settings-dialog-title">
       <form id="settings-form">
         <div class="dialog-heading">
           <div>
             <div class="eyebrow accent">MODEL CONNECTION</div>
-            <h2>连接你的模型</h2>
+            <h2 id="settings-dialog-title">连接你的模型</h2>
             <p>为分析师和研究经理选择合适的模型。</p>
           </div>
           <button

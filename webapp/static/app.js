@@ -58,11 +58,62 @@ const state = {
   tabSignature: null,
   eventsSignature: "",
   historySignature: null,
+  historyRuns: [],
+  historyCursor: null,
+  historyOffset: 0,
+  historyHasMore: false,
+  historyTotal: null,
+  historyLoading: false,
+  historyError: "",
+  historyMode: "cursor",
+  historyQuery: "",
+  historyRequestVersion: 0,
   pollFailures: 0,
 };
 let selectionVersion = 0;
 let runsRequestVersion = 0;
+let settingsSessionVersion = 0;
+let settingsSaveVersion = 0;
+let settingsRefreshVersion = 0;
+let processRunId = null;
+let previousProcessWasActive = false;
 let pollTimer = null;
+let historySearchTimer = null;
+function settingsRequestIsCurrent(snapshot, current) {
+  return (
+    snapshot.session === current.session &&
+    snapshot.provider === current.provider &&
+    snapshot.requestVersion === current.requestVersion &&
+    current.open === true
+  );
+}
+function normalizeRunPage(result, limit = HISTORY_PAGE_SIZE) {
+  if (Array.isArray(result)) {
+    return {
+      items: result,
+      mode: "offset",
+      nextCursor: null,
+      hasMore: result.length === limit,
+      total: null,
+    };
+  }
+  if (!result || !Array.isArray(result.items)) return null;
+  return {
+    items: result.items,
+    mode: "cursor",
+    nextCursor: result.next_cursor ?? null,
+    hasMore: Boolean(result.has_more),
+    total:
+      typeof result.total === "number" && Number.isSafeInteger(result.total)
+        ? result.total
+        : null,
+  };
+}
+function orderReportKeys(keys) {
+  return keys.includes("final_trade_decision")
+    ? ["final_trade_decision", ...keys.filter((key) => key !== "final_trade_decision")]
+    : [...keys];
+}
 const active = (r) =>
   r && ["queued", "running", "cancelling"].includes(r.status);
 const statusLabels = {
@@ -88,7 +139,13 @@ const analystKeys = {
   news: "news_report",
   social: "sentiment_report",
 };
-const number = (v) => Number(v || 0).toLocaleString("zh-CN");
+const number = (v) =>
+  typeof v === "number" && Number.isFinite(v)
+    ? v.toLocaleString("zh-CN")
+    : "—";
+const HISTORY_PAGE_SIZE = 100;
+const ACTIVE_POLL_INTERVAL = 2800;
+const IDLE_POLL_INTERVAL = 30000;
 const CUSTOM_MODEL_VALUE = "__tradingagents_custom_model__";
 const cryptoBases = new Set([
   "BTC",
@@ -207,6 +264,7 @@ function renderModelSummary() {
       ? `${state.quick_model}  /  ${state.deep_model}`
       : "先连接模型，再开始你的第一份研究。",
   );
+  renderSetupSummary();
 }
 function updateStart() {
   const running = state.runs.some(active);
@@ -270,6 +328,12 @@ function selectedModel(tier) {
     : value;
 }
 function openSettings() {
+  settingsSessionVersion++;
+  settingsSaveVersion++;
+  settingsRefreshVersion++;
+  $("#save-settings").disabled = false;
+  $("#refresh-models").disabled = false;
+  $("#provider").disabled = false;
   const provider = $("#provider");
   provider.replaceChildren();
   state.meta.providers.forEach((p) => {
@@ -282,6 +346,30 @@ function openSettings() {
   settingsProvider(false);
   inlineError("#settings-error", "");
   $("#settings-dialog").showModal();
+}
+function invalidateSettingsSession() {
+  settingsSessionVersion++;
+  settingsSaveVersion++;
+  settingsRefreshVersion++;
+  $("#api-key").value = "";
+  $("#save-settings").disabled = false;
+  $("#refresh-models").disabled = false;
+  $("#provider").disabled = false;
+}
+function closeSettingsDialog() {
+  invalidateSettingsSession();
+  $("#settings-dialog").close();
+}
+function currentSettingsSession(session, provider, requestVersion, kind) {
+  return settingsRequestIsCurrent(
+    { session, provider, requestVersion },
+    {
+      session: settingsSessionVersion,
+      provider: $("#provider").value,
+      requestVersion: kind === "save" ? settingsSaveVersion : settingsRefreshVersion,
+      open: $("#settings-dialog").open,
+    },
+  );
 }
 function settingsProvider(reset) {
   const p = providerInfo($("#provider").value);
@@ -313,6 +401,9 @@ function settingsProvider(reset) {
 }
 async function saveSettings(event) {
   event.preventDefault();
+  const session = settingsSessionVersion;
+  const requestVersion = ++settingsSaveVersion;
+  const provider = $("#provider").value;
   inlineError("#settings-error", "");
   $("#save-settings").disabled = true;
   try {
@@ -330,29 +421,34 @@ async function saveSettings(event) {
       return;
     }
     const payload = {
-      provider: $("#provider").value,
+      provider,
       api_key: $("#api-key").value,
       quick_model: quickModel,
       deep_model: deepModel,
       backend_url: $("#backend-url").value.trim(),
     };
     const meta = await api("/api/settings", payload);
+    if (!currentSettingsSession(session, provider, requestVersion, "save"))
+      return;
     state.meta = meta;
     Object.assign(state, meta.preferences);
-    $("#api-key").value = "";
-    $("#settings-dialog").close();
+    closeSettingsDialog();
     renderModelSummary();
     toast("模型配置已保存到本机");
   } catch (e) {
-    inlineError("#settings-error", e.message);
+    if (currentSettingsSession(session, provider, requestVersion, "save"))
+      inlineError("#settings-error", e.message);
   } finally {
-    $("#save-settings").disabled = false;
+    if (currentSettingsSession(session, provider, requestVersion, "save"))
+      $("#save-settings").disabled = false;
   }
 }
 async function refreshModels() {
   const button = $("#refresh-models");
   const providerSelect = $("#provider");
   const provider = $("#provider").value;
+  const session = settingsSessionVersion;
+  const requestVersion = ++settingsRefreshVersion;
   button.disabled = true;
   providerSelect.disabled = true;
   text($("#models-feedback"), "正在读取账户可用模型…");
@@ -360,6 +456,8 @@ async function refreshModels() {
     const result = await api(
       `/api/models?provider=${encodeURIComponent(provider)}`,
     );
+    if (!currentSettingsSession(session, provider, requestVersion, "refresh"))
+      return;
     if (!result.models?.quick?.length || !result.models?.deep?.length) {
       throw new Error("服务没有返回可用模型，请稍后重试。");
     }
@@ -383,10 +481,13 @@ async function refreshModels() {
     }
     text($("#models-feedback"), "已更新当前账户可用的模型。");
   } catch (error) {
-    text($("#models-feedback"), error.message);
+    if (currentSettingsSession(session, provider, requestVersion, "refresh"))
+      text($("#models-feedback"), error.message);
   } finally {
-    button.disabled = false;
-    providerSelect.disabled = false;
+    if (currentSettingsSession(session, provider, requestVersion, "refresh")) {
+      button.disabled = false;
+      providerSelect.disabled = false;
+    }
   }
 }
 function showView(view) {
@@ -400,7 +501,10 @@ function showView(view) {
     if (selected) b.setAttribute("aria-current", "page");
     else b.removeAttribute("aria-current");
   });
-  if (view === "history") renderHistory();
+  if (view === "history") {
+    renderHistory();
+    loadHistoryPage(true);
+  }
 }
 function newResearch() {
   showView("workspace");
@@ -417,6 +521,7 @@ function newResearch() {
   state.lastReport = "";
   state.tabSignature = null;
   state.eventsSignature = "";
+  $("#analysis-settings").open = true;
   $("#ticker").value = "";
   assetChanged(true);
   $("#analysis-date").value = localDate();
@@ -441,6 +546,7 @@ function setRounds(rounds) {
     b.classList.toggle("selected", selected);
     b.setAttribute("aria-pressed", String(selected));
   });
+  renderSetupSummary();
 }
 function assetChanged(shouldCheck = true) {
   const crypto = inferAssetType($("#ticker").value) === "crypto";
@@ -460,6 +566,7 @@ function assetChanged(shouldCheck = true) {
         : "输入代码后自动识别标的类型，无需选择资产类型。",
     );
   }
+  renderSetupSummary();
 }
 async function startAnalysis(event) {
   event.preventDefault();
@@ -488,15 +595,23 @@ async function startAnalysis(event) {
   const startSelection = ++selectionVersion;
   try {
     const run = await api("/api/runs", payload);
-    state.runs = [run, ...state.runs.filter((r) => r.id !== run.id)];
+    state.runs = [run, ...state.runs.filter((r) => r.id !== run.id)].slice(0, 5);
+    if (!state.historyQuery) {
+      state.historyRuns = mergeRunsById(state.historyRuns, [run]);
+      if (state.historyTotal !== null) state.historyTotal++;
+      state.historySignature = null;
+    }
     if (selectionVersion === startSelection) {
       state.run = run;
       rememberRun(run.id);
+      $("#analysis-settings").open = false;
       state.tab = null;
       state.lastReport = "";
       state.tabSignature = null;
       state.eventsSignature = "";
       renderRun();
+      clearTimeout(pollTimer);
+      pollTimer = setTimeout(poll, ACTIVE_POLL_INTERVAL);
     }
     renderRecents();
     toast("研究已启动，团队开始准备数据");
@@ -531,6 +646,126 @@ function reportPlaceholder(run) {
   if (run?.status === "failed" || run?.status === "interrupted")
     return "研究未能完成，尚未收到分析报告。你可以复用配置后重试。";
   return "尚未收到分析报告。";
+}
+function canResumeRun(run) {
+  return !!run && ["interrupted", "failed", "cancelled"].includes(run.status);
+}
+function decisionRating(run) {
+  if (run?.quality?.status === "unavailable") return "资料不足 · 暂不评级";
+  return run?.rating
+    ? `${ratings[run.rating] || run.rating} · ${run.rating}`
+    : "评级待生成";
+}
+function decisionQualityWarning(run) {
+  if (run?.quality?.status !== "unavailable") return "";
+  return `资料不足，当前评级暂不采纳。${run.quality.summary ? ` ${run.quality.summary}` : ""}`;
+}
+function plainReportText(value) {
+  return String(value)
+    .replace(/^\s{0,3}#{1,6}\s+/, "")
+    .replace(/^\s{0,3}[-*+]\s+/, "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/[*_`>#]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+function isReportMetadata(value) {
+  const plain = plainReportText(value);
+  if (/^(?:final\s+(?:trade\s+)?decision|trade\s+decision|最终决策|最终结论)$/i.test(plain))
+    return true;
+  return /^(?:rating|time\s*horizon|investment\s*horizon|confidence|recommendation|ticker|symbol|date|评级|投资期限|时间范围|置信度|建议|标的|日期)(?:\s*(?::|：|[-–—])\s*.*)?$/i.test(plain);
+}
+function summaryCandidate(paragraphs) {
+  const blocks = paragraphs.map(plainReportText).filter(Boolean);
+  const label = /^(?:executive\s+summary|summary|执行摘要|结论摘要|投资摘要|摘要)\s*[:：\-–—]?\s*(.*)$/i;
+  for (let index = 0; index < blocks.length; index += 1) {
+    const match = blocks[index].match(label);
+    if (!match) continue;
+    if (match[1] && !isReportMetadata(match[1])) return match[1];
+    for (const next of blocks.slice(index + 1)) {
+      if (isReportMetadata(next)) continue;
+      return next;
+    }
+  }
+  return blocks.find((paragraph) => !isReportMetadata(paragraph)) || "";
+}
+function decisionSummary(run) {
+  const source = run?.reports?.final_trade_decision;
+  if (typeof source !== "string" || !source.trim()) return "";
+  const rendered = run?.rendered?.final_trade_decision;
+  if (typeof document !== "undefined" && typeof rendered === "string") {
+    const template = document.createElement("template");
+    template.innerHTML = rendered;
+    const paragraphs = [...template.content.querySelectorAll("h1,h2,h3,p")].map(
+      (node) => node.textContent.trim(),
+    );
+    const paragraph = summaryCandidate(paragraphs);
+    if (paragraph) return paragraph.slice(0, 420).trimEnd() + (paragraph.length > 420 ? "…" : "");
+  }
+  const blocks = source
+    .split(/\r?\n\s*\r?\n/)
+    .map((block) => block.replace(/\r?\n/g, " ").trim())
+    .filter((block) => block && !/^```/.test(block) && !/^\|/.test(block) && !/^[-*_]{3,}$/.test(block));
+  const plain = summaryCandidate(blocks);
+  if (!plain) return "";
+  return plain.slice(0, 420).trimEnd() + (plain.length > 420 ? "…" : "");
+}
+function usageStatus(stats = {}) {
+  const validCount = (value) =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  const knownCalls = validCount(stats.usage_known_calls)
+    ? stats.usage_known_calls
+    : null;
+  const totalCalls = validCount(stats.llm_calls) ? stats.llm_calls : null;
+  const hasFlags =
+    typeof stats.usage_reported === "boolean" ||
+    typeof stats.usage_complete === "boolean" ||
+    knownCalls !== null;
+  if (!hasFlags) {
+    const hasValues = validCount(stats.tokens_in) || validCount(stats.tokens_out);
+    return {
+      state: hasValues ? "unknown" : "unreported",
+      label: hasValues ? "用量状态未验证" : "未报告用量",
+    };
+  }
+  if (stats.usage_reported === false || knownCalls === 0) {
+    return { state: "unreported", label: "未报告用量" };
+  }
+  if (stats.usage_complete === true) {
+    return { state: "complete", label: "完整用量统计" };
+  }
+  if (stats.usage_reported === true || (knownCalls !== null && knownCalls > 0)) {
+    const label =
+      knownCalls !== null && totalCalls !== null
+        ? `部分统计 · ${number(knownCalls)} / ${number(totalCalls)} 次模型调用报告用量`
+        : knownCalls !== null
+          ? `部分统计 · ${number(knownCalls)} 次模型调用报告用量 · 总调用数未知`
+          : "部分统计 · 有调用报告用量 · 总调用数未知";
+    return {
+      state: "partial",
+      label,
+    };
+  }
+  return { state: "unreported", label: "未报告用量" };
+}
+function setupSummaryText() {
+  const config = state.run?.config;
+  const ticker = $("#ticker")?.value.trim() || "未选择标的";
+  const date = $("#analysis-date")?.value || "日期未设置";
+  const provider = config
+    ? state.meta?.providers?.find((item) => item.id === config.provider)?.name ||
+      config.provider
+    : $("#selected-provider")?.textContent.trim() || "模型未配置";
+  const models = config
+    ? [config.quick_model, config.deep_model].filter(Boolean).join(" / ")
+    : $("#selected-models")?.textContent.trim() || "";
+  const compactModel = models.length > 48 ? `${models.slice(0, 45)}…` : models;
+  return [ticker, date, provider, compactModel]
+    .filter((value) => value && !value.startsWith("先连接模型"))
+    .join(" · ");
+}
+function renderSetupSummary() {
+  text($("#setup-brief"), setupSummaryText());
 }
 function renderReportTabs(keys) {
   const tabs = $("#report-tabs");
@@ -570,6 +805,7 @@ function renderReportTabs(keys) {
     b.setAttribute("aria-selected", String(selected));
     b.tabIndex = selected ? 0 : -1;
     b.classList.toggle("active", selected);
+    if (selected) b.scrollIntoView?.({ block: "nearest" });
   });
 }
 function activateReportTab(key) {
@@ -628,9 +864,19 @@ function renderPipeline() {
 }
 function renderRun() {
   const run = state.run;
+  renderSetupSummary();
+  const processDetails = $("#process-details");
+  if (run?.id !== processRunId) {
+    processDetails.open = !!active(run);
+    processRunId = run?.id || null;
+  } else if (previousProcessWasActive && !active(run)) {
+    processDetails.open = false;
+  }
+  previousProcessWasActive = !!active(run);
   renderPipeline();
   const badge = $("#run-status");
   badge.className = "status-tag " + (run?.status || "");
+  $(".activity-panel").classList.toggle("is-complete", run?.status === "completed");
   text(badge, run ? statusLabels[run.status] : "等待开始");
   text(
     $("#run-subtitle"),
@@ -677,14 +923,23 @@ function renderRun() {
   text($("#event-count"), `${eventList.length} 条`);
   ["llm", "tools", "tokens"].forEach((id) => {
     let value = "—";
+    let note = "";
     if (run) {
-      const stats = run.stats;
+      const stats = run.stats || {};
       if (id === "llm") value = number(stats.llm_calls);
       if (id === "tools") value = number(stats.tool_calls);
-      if (id === "tokens")
-        value = `${number(stats.tokens_in)} / ${number(stats.tokens_out)}`;
+      if (id === "tokens") {
+        const hasInput = Number.isSafeInteger(stats.tokens_in) && stats.tokens_in >= 0;
+        const hasOutput = Number.isSafeInteger(stats.tokens_out) && stats.tokens_out >= 0;
+        value =
+          !hasInput && !hasOutput
+            ? "未报告"
+            : `${hasInput ? number(stats.tokens_in) : "未报告"} / ${hasOutput ? number(stats.tokens_out) : "未报告"}`;
+        note = usageStatus(stats).label;
+      }
     }
     text($(`#stat-${id}`), value);
+    if (id === "tokens") text($("#stat-tokens-status"), note);
   });
   $("#report-empty").hidden = !!run;
   $("#report-content").hidden = !run;
@@ -692,7 +947,8 @@ function renderRun() {
     $("#report-subtitle"),
     run ? `${run.config.ticker} / ${run.config.date}` : "RESEARCH BRIEF",
   );
-  const hasReports = run && Object.keys(run.reports).length > 0;
+  const reportData = run?.reports || {};
+  const hasReports = run && Object.keys(reportData).length > 0;
   for (const ext of ["md", "html"]) {
     const link = $(`#export-${ext}`);
     link.hidden = !hasReports;
@@ -702,13 +958,32 @@ function renderRun() {
     }
   }
   const decision = $("#decision-banner");
-  decision.hidden = !run?.reports.final_trade_decision;
+  const hasFinalDecision = !!reportData.final_trade_decision;
+  decision.hidden = !hasFinalDecision;
   text(
     $("#decision-rating"),
-    run?.rating
-      ? `${ratings[run.rating] || run.rating} · ${run.rating}`
-      : "正在整理评级",
+    decisionRating(run),
   );
+  const qualityWarning = $("#decision-quality-warning");
+  const hasUnavailableEvidence = run?.quality?.status === "unavailable";
+  qualityWarning.hidden = !hasUnavailableEvidence;
+  text(qualityWarning, decisionQualityWarning(run));
+  text(
+    $("#decision-summary"),
+    decisionSummary(run) || "完整结论请查看下方最终结论章节。",
+  );
+  const finalButton = $("#view-final-decision");
+  finalButton.hidden = !hasFinalDecision;
+  $("#research-overview").hidden = !run;
+  $("#research-visuals").hidden = !run;
+  const evidenceExport = $("#export-evidence");
+  const evidenceCount = run?.quality?.evidence_count;
+  evidenceExport.hidden =
+    !Number.isSafeInteger(evidenceCount) || evidenceCount <= 0;
+  if (!evidenceExport.hidden) {
+    evidenceExport.href = `/api/runs/${encodeURIComponent(run.id)}/evidence.json`;
+    evidenceExport.download = `${run.config.ticker}-${run.config.date}-evidence.json`;
+  }
   const reuse = $("#reuse-run");
   if (reuse) {
     reuse.hidden = !run || active(run);
@@ -727,12 +1002,21 @@ function renderRun() {
     error.append(
       b,
       document.createTextNode(
-        `${run.error || "你可以调整设置，或使用相同配置重新开始。"} 请使用“复用配置”载入本次参数。`,
+        `${run.error || "本次研究未能完成。"} ${canResumeRun(run) ? "可继续本次研究，也可以复用配置后重新开始。" : "你可以复用配置后重新开始。"}`,
       ),
     );
+    if (canResumeRun(run)) {
+      const resume = document.createElement("button");
+      resume.type = "button";
+      resume.className = "button small ghost";
+      resume.textContent = "继续研究";
+      resume.setAttribute("aria-label", `继续 ${run.config.ticker} 的研究`);
+      resume.onclick = resumeRun;
+      error.append(resume);
+    }
   }
-  const keys = Object.keys(state.meta?.labels || {}).filter(
-    (k) => run?.reports[k],
+  const keys = orderReportKeys(
+    Object.keys(state.meta?.labels || {}).filter((k) => reportData[k]),
   );
   if (!keys.includes(state.tab))
     state.tab = keys.includes("final_trade_decision")
@@ -791,6 +1075,7 @@ function updateElapsed() {
 }
 function renderSelectedRun(run, focus = false) {
   syncForm(run.config);
+  $("#analysis-settings").open = false;
   showView("workspace");
   renderRun();
   renderRecents();
@@ -831,16 +1116,56 @@ function reuseRun(run) {
   toast("已载入这次研究的配置，点击“开始研究”重试。");
   $("#analysis-form").scrollIntoView({ behavior: "smooth", block: "center" });
 }
+async function resumeRun(event) {
+  const run = state.run;
+  if (!canResumeRun(run)) return false;
+  const selection = selectionVersion;
+  const button = event?.currentTarget;
+  if (button) button.disabled = true;
+  try {
+    const updated = await api(`/api/runs/${encodeURIComponent(run.id)}/resume`, {});
+    if (selection !== selectionVersion || state.run?.id !== run.id) return false;
+    state.run = updated;
+    state.runs = mergeRunsById(state.runs, [updated]).slice(0, 5);
+    state.historyRuns = mergeRunsById(state.historyRuns, [updated]);
+    state.historySignature = null;
+    state.eventsSignature = "";
+    state.lastReport = "";
+    renderRun();
+    renderRecents();
+    if (state.view === "history") renderHistory();
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(poll, ACTIVE_POLL_INTERVAL);
+    toast("已继续研究，已有报告会保留在本次记录中");
+    return true;
+  } catch (error) {
+    if (selection === selectionVersion && state.run?.id === run.id) {
+      const message = document.createElement("p");
+      message.textContent = error.message;
+      $("#run-error").append(message);
+      if (button) button.disabled = false;
+    }
+    return false;
+  }
+}
 let recentKey = "";
 function renderRecents() {
   const key = JSON.stringify([
     state.runs.map((r) => [r.id, r.status]),
     state.run?.id || "",
+    state.historyQuery ? null : state.historyTotal,
   ]);
   if (key === recentKey) return;
   recentKey = key;
-  text($("#history-count"), number(state.runs.length));
-  text($("#archive-count"), `${state.runs.length} 份`);
+  const count = state.historyQuery ? null : state.historyTotal;
+  text(
+    $("#history-count"),
+    count === null ? (state.runs.length >= 5 ? "5+" : number(state.runs.length)) : number(count),
+  );
+  text(
+    $("#archive-count"),
+    count === null ? `最近 ${state.runs.length} 份` : `${number(count)} 份`,
+  );
   const holder = $("#recent-runs");
   holder.replaceChildren();
   if (!state.runs.length) {
@@ -871,8 +1196,8 @@ function renderRecents() {
 }
 function renderHistory() {
   const query = $("#history-search").value.trim().toLowerCase();
-  const runs = state.runs.filter((r) =>
-    `${r.config.ticker} ${r.config.provider} ${providerInfo(r.config.provider)?.name || ""}`
+  const runs = state.historyRuns.filter((r) =>
+    `${r.config.ticker} ${r.config.provider} ${providerInfo(r.config.provider)?.name || ""} ${r.config.quick_model || ""} ${r.config.deep_model || ""}`
       .toLowerCase()
       .includes(query),
   );
@@ -888,17 +1213,44 @@ function renderHistory() {
       r.config.date,
       r.config.provider,
     ]),
+    state.historyLoading,
+    state.historyHasMore,
+    state.historyTotal,
   ]);
+  const loadMore = $("#history-load-more");
+  loadMore.hidden = !state.historyHasMore && !state.historyError;
+  loadMore.disabled = state.historyLoading;
+  text(
+    loadMore,
+    state.historyLoading
+      ? "正在加载…"
+      : state.historyError
+        ? "重试加载"
+        : "加载更多研究",
+  );
+  text(
+    $("#history-load-status"),
+    state.historyLoading
+      ? "正在载入研究档案…"
+      : state.historyError ||
+        (state.historyTotal === null
+          ? `${runs.length} 份已载入${state.historyHasMore ? " · 还有更多记录" : ""}`
+          : `${number(runs.length)} / ${number(state.historyTotal)} 份研究`),
+  );
   if (signature === state.historySignature) return;
   state.historySignature = signature;
   const focusedRunId = document.activeElement?.dataset?.runId;
   const holder = $("#history-rows");
   holder.replaceChildren();
-  $("#history-empty").hidden = runs.length > 0;
+  $("#history-empty").hidden = runs.length > 0 || state.historyLoading;
   text(
     $("#history-empty"),
-    query
-      ? "没有匹配的研究记录。"
+    state.historyError
+      ? "读取失败，可以重试加载。"
+      : query
+      ? state.historyLoading
+        ? "正在搜索研究档案…"
+        : "没有匹配的研究记录。"
       : "还没有研究记录。开始第一份研究，结果会自动保存在这里。",
   );
   runs.forEach((r) => {
@@ -945,11 +1297,85 @@ function renderHistory() {
     holder.querySelector(`[data-run-id="${focusedRunId}"]`)?.focus();
   renderVisuals();
 }
+function mergeRunsById(current, incoming) {
+  const merged = new Map();
+  for (const run of [...current, ...incoming]) {
+    if (run?.id) merged.set(run.id, { ...merged.get(run.id), ...run });
+  }
+  return [...merged.values()].sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+}
+async function loadHistoryPage(reset = false) {
+  const searchInput = $("#history-search");
+  if (!searchInput) return;
+  const query = searchInput.value.trim();
+  if (
+    !reset &&
+    ((!state.historyHasMore && !state.historyError) || state.historyLoading)
+  )
+    return;
+  const requestVersion = reset
+    ? ++state.historyRequestVersion
+    : state.historyRequestVersion;
+  if (reset) {
+    state.historyRuns = [];
+    state.historyCursor = null;
+    state.historyOffset = 0;
+    state.historyHasMore = false;
+    state.historyTotal = null;
+    state.historyMode = "cursor";
+    state.historyQuery = query;
+    state.historyError = "";
+    state.historySignature = null;
+  }
+  state.historyLoading = true;
+  renderHistory();
+  const params = new URLSearchParams({ limit: String(HISTORY_PAGE_SIZE) });
+  if (state.historyMode === "cursor")
+    params.set("cursor", reset ? "first" : state.historyCursor || "first");
+  else params.set("offset", String(state.historyOffset));
+  if (query) params.set("q", query);
+  try {
+    const result = await api(`/api/runs?${params.toString()}`);
+    if (requestVersion !== state.historyRequestVersion) return;
+    const page = normalizeRunPage(result, HISTORY_PAGE_SIZE);
+    if (!page) throw new Error("研究档案响应格式不正确。");
+    state.historyError = "";
+    const items = page.items;
+    const beforeCount = state.historyRuns.length;
+    state.historyRuns = reset
+      ? mergeRunsById([], items)
+      : mergeRunsById(state.historyRuns, items);
+    state.historyOffset += items.length;
+    state.historyMode = page.mode;
+    state.historyCursor = page.nextCursor;
+    state.historyHasMore = page.hasMore;
+    if (page.total !== null) state.historyTotal = page.total;
+    else if (!state.historyHasMore)
+      state.historyTotal = state.historyRuns.length;
+    if (!reset && state.historyRuns.length === beforeCount)
+      state.historyHasMore = false;
+    if (state.historyQuery === "") renderRecents();
+  } catch (error) {
+    if (requestVersion === state.historyRequestVersion) {
+      state.historyError = error.message;
+      state.historyHasMore = state.historyRuns.length > 0;
+    }
+  } finally {
+    if (requestVersion === state.historyRequestVersion) {
+      state.historyLoading = false;
+      state.historySignature = null;
+      renderHistory();
+    }
+  }
+}
 async function refreshRuns() {
   const requestVersion = ++runsRequestVersion;
-  const runs = await api("/api/runs");
+  const result = await api("/api/runs?limit=5&offset=0");
+  const runs = Array.isArray(result) ? result : result?.items || [];
   if (requestVersion !== runsRequestVersion) return state.runs;
-  state.runs = runs;
+  state.runs = mergeRunsById([], runs).slice(0, 5);
+  if (state.historyQuery === "" && state.historyRuns.length)
+    state.historyRuns = mergeRunsById(state.historyRuns, runs);
   renderRecents();
   if (state.view === "history") renderHistory();
   updateStart();
@@ -1005,9 +1431,13 @@ async function poll() {
   } finally {
     state.polling = false;
     clearTimeout(pollTimer);
+    const activeWork = state.runs.some(active) || active(state.run);
+    const baseDelay = activeWork ? ACTIVE_POLL_INTERVAL : IDLE_POLL_INTERVAL;
     const delay = succeeded
-      ? 1800
-      : Math.min(30000, 1800 * 2 ** Math.min(state.pollFailures, 4));
+      ? document.visibilityState === "hidden"
+        ? Math.max(baseDelay, 60000)
+        : baseDelay
+      : Math.min(60000, baseDelay * 2 ** Math.min(state.pollFailures, 4));
     pollTimer = setTimeout(poll, delay);
   }
 }
@@ -1075,9 +1505,30 @@ async function init() {
   );
   $("#analysis-form").addEventListener("submit", startAnalysis);
   $("#settings-form").addEventListener("submit", saveSettings);
-  $("#provider").addEventListener("change", () => settingsProvider(true));
+  $("#provider").addEventListener("change", () => {
+    settingsSessionVersion++;
+    settingsSaveVersion++;
+    settingsRefreshVersion++;
+    settingsProvider(true);
+  });
   $("#ticker").addEventListener("input", () => assetChanged());
-  $("#history-search").addEventListener("input", renderHistory);
+  $("#analysis-date").addEventListener("input", renderSetupSummary);
+  $("#analysis-settings").addEventListener("toggle", renderSetupSummary);
+  $("#history-search").addEventListener("input", () => {
+    state.historyRequestVersion++;
+    state.historyLoading = false;
+    state.historySignature = null;
+    renderHistory();
+    clearTimeout(historySearchTimer);
+    if (state.view === "history")
+      historySearchTimer = setTimeout(() => loadHistoryPage(true), 220);
+  });
+  $("#history-load-more").addEventListener("click", () => loadHistoryPage(false));
+  $("#view-final-decision").addEventListener("click", () => {
+    if (!state.run?.reports?.final_trade_decision) return;
+    activateReportTab("final_trade_decision");
+    $(".report-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+  });
   [
     "#configure-model",
     "#research-settings",
@@ -1092,10 +1543,10 @@ async function init() {
   $$(".close-dialog").forEach(
     (b) =>
       (b.onclick = () => {
-        $("#api-key").value = "";
-        $("#settings-dialog").close();
+        closeSettingsDialog();
       }),
   );
+  $("#settings-dialog").addEventListener("cancel", invalidateSettingsSession);
   ["#new-research", "#new-sidebar", "#history-new"].forEach(
     (id) => ($(id).onclick = newResearch),
   );
@@ -1129,6 +1580,7 @@ async function init() {
     }
   };
   $("#chatgpt-login").onclick = loginChatGPT;
+  $("#resume-run")?.addEventListener("click", resumeRun);
   $("#reuse-run")?.addEventListener("click", () => reuseRun(state.run));
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "1") {
@@ -1143,6 +1595,11 @@ async function init() {
       e.preventDefault();
       if (state.meta) openSettings();
     }
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible" || !state.meta) return;
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(poll, 0);
   });
   try {
     state.meta = await api("/api/bootstrap");
@@ -1161,7 +1618,12 @@ async function init() {
     const ongoing = state.runs.find(active);
     const remembered = state.runs.find((r) => r.id === recalledRun());
     if (ongoing || remembered) await selectRun((ongoing || remembered).id);
-    pollTimer = setTimeout(poll, 1800);
+    pollTimer = setTimeout(
+      poll,
+      state.runs.some(active) || active(state.run)
+        ? ACTIVE_POLL_INTERVAL
+        : IDLE_POLL_INTERVAL,
+    );
     setInterval(updateElapsed, 1000);
   } catch (e) {
     text($("#engine-version"), "无法连接");
@@ -1171,9 +1633,17 @@ async function init() {
 }
 if (typeof module !== "undefined" && module.exports)
   module.exports = {
+    canResumeRun,
+    decisionQualityWarning,
+    decisionRating,
+    decisionSummary,
+    usageStatus,
+    normalizeRunPage,
+    orderReportKeys,
     reportTabTarget,
     reportRenderKey,
     reportPlaceholder,
+    settingsRequestIsCurrent,
     inferAssetType,
     modelChoices,
     CUSTOM_MODEL_VALUE,

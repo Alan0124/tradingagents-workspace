@@ -22,9 +22,10 @@ def test_get_yfin_requests_inclusive_end(monkeypatch):
         def __init__(self, symbol):
             pass
 
-        def history(self, start, end):
+        def history(self, start, end, **kwargs):
             captured["start"] = start
             captured["end"] = end
+            captured.update(kwargs)
             idx = pd.to_datetime(["2025-05-08", "2025-05-09"])
             return pd.DataFrame(
                 {"Open": [1.0, 2.0], "High": [1.0, 2.0], "Low": [1.0, 2.0],
@@ -37,6 +38,8 @@ def test_get_yfin_requests_inclusive_end(monkeypatch):
 
     # end is requested one day past end_date so 2025-05-09 is included (#987).
     assert captured["end"] == "2025-05-10"
+    assert captured["auto_adjust"] is False
+    assert captured["actions"] is False
     # Header still reflects the requested range, not the internal +1 day.
     assert "to 2025-05-09" in out
 
@@ -48,6 +51,7 @@ def test_load_ohlcv_requests_inclusive_end(monkeypatch, tmp_path):
 
     def fake_history(start, end, **kwargs):
         captured["end"] = end
+        captured.update(kwargs)
         idx = pd.to_datetime([pd.Timestamp.today().normalize()])
         return pd.DataFrame(
             {"Open": [100.0], "High": [100.0], "Low": [100.0],
@@ -61,3 +65,5 @@ def test_load_ohlcv_requests_inclusive_end(monkeypatch, tmp_path):
 
     expected_end = (pd.Timestamp.today() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     assert captured["end"] == expected_end  # tomorrow -> today's row included (#986)
+    assert captured["auto_adjust"] is False
+    assert captured["actions"] is False

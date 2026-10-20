@@ -26,7 +26,8 @@ def _stamp(path, ts):
     os.utime(path, (t, t))
 
 
-def _write(tmp_path, name="AAPL-YFin-data.csv", age_seconds=0.0, last_date="2026-07-17"):
+def _write(tmp_path, name=None, age_seconds=0.0, last_date="2026-07-17"):
+    name = name or f"AAPL-YFin-data-{ohlcv.OHLCV_CACHE_VERSION}.csv"
     f = tmp_path / name
     pd.DataFrame({"Date": [last_date], "Close": [100.0]}).to_csv(f, index=False)
     _stamp(f, NOW - pd.Timedelta(seconds=age_seconds))
@@ -110,4 +111,27 @@ def test_one_cache_file_per_symbol_across_days(tmp_path, monkeypatch):
         _stamp(written[0], now)
 
     assert len(downloads) == 3, "each new day refetches"
-    assert [p.name for p in tmp_path.iterdir()] == ["AAPL-YFin-data.csv"]
+    assert [p.name for p in tmp_path.iterdir()] == [
+        f"AAPL-YFin-data-{ohlcv.OHLCV_CACHE_VERSION}.csv"
+    ]
+
+
+@pytest.mark.unit
+def test_adjusted_legacy_cache_is_not_reused(tmp_path, monkeypatch):
+    """The old unversioned cache may contain dividend-adjusted OHLCV."""
+    legacy = _write(tmp_path, name="AAPL-YFin-data.csv", last_date="2026-07-18")
+    calls = []
+
+    def download(*args, **kwargs):
+        calls.append(kwargs)
+        return pd.DataFrame(
+            {"Date": pd.to_datetime(["2026-07-17", "2026-07-18"]), "Close": [100.0, 222.0]}
+        ).set_index("Date")
+
+    out = _load(tmp_path, monkeypatch, "2026-07-18", download)
+
+    assert calls, "legacy adjusted cache must not satisfy a close-basis request"
+    assert calls[0]["auto_adjust"] is False
+    assert 222.0 in out["Close"].values
+    assert legacy.exists(), "old cache is left untouched but is never read"
+    assert (tmp_path / f"AAPL-YFin-data-{ohlcv.OHLCV_CACHE_VERSION}.csv").exists()

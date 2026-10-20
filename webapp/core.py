@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -82,6 +83,10 @@ PROVIDERS = {
     "openai_compatible": "自定义兼容接口",
 }
 ACTIVE = {"queued", "running", "cancelling"}
+RUN_TIMEOUT_SECONDS = 30 * 60
+RUN_LLM_CALL_LIMIT = 80
+RUN_TOKEN_LIMIT = 500_000
+RUN_PAGE_SIZE = 100
 MD = MarkdownIt("commonmark", {"html": False, "linkify": False}).enable("table")
 SETTINGS_LOCK = threading.RLock()
 SAVED_CREDENTIAL_OVERRIDES = {}
@@ -409,6 +414,16 @@ def validate_run(body, check_credentials=True):
         or ".." in ticker
     ):
         raise ValueError("请输入有效的股票代码，例如 AAPL、0700.HK 或 600519.SS。")
+    from tradingagents.dataflows.symbols import normalize_symbol
+
+    ticker = normalize_symbol(ticker)
+    if (
+        not isinstance(ticker, str)
+        or len(ticker) > 31
+        or not re.fullmatch(r"[A-Z0-9^][A-Z0-9.^=\-]{0,30}\+?", ticker)
+        or ".." in ticker
+    ):
+        raise ValueError("请输入有效的股票代码，例如 AAPL、0700.HK 或 600519.SS。")
     date = body.get("date")
     if not isinstance(date, str):
         raise ValueError("请选择有效的分析日期。")
@@ -493,7 +508,9 @@ class Store:
         self.lock = threading.RLock()
         with self.db() as db:
             db.execute(
-                "CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, status TEXT NOT NULL, document TEXT NOT NULL)"
+                "CREATE TABLE IF NOT EXISTS runs ("
+                "id TEXT PRIMARY KEY, status TEXT NOT NULL, document TEXT NOT NULL, "
+                "summary_json TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL DEFAULT 0)"
             )
             columns = {row[1] for row in db.execute("PRAGMA table_info(runs)")}
             if "status" not in columns:
@@ -506,7 +523,40 @@ class Store:
                     except (ValueError, AttributeError):
                         status = ""
                     db.execute("UPDATE runs SET status=? WHERE id=?", (status, run_id))
+            columns = {row[1] for row in db.execute("PRAGMA table_info(runs)")}
+            if "summary_json" not in columns:
+                db.execute("ALTER TABLE runs ADD COLUMN summary_json TEXT NOT NULL DEFAULT '{}' ")
+            if "created_at" not in columns:
+                db.execute("ALTER TABLE runs ADD COLUMN created_at REAL NOT NULL DEFAULT 0")
+            # Backfill lightweight summaries and the sort key once when opening
+            # an old workspace database. Normal list requests never decode the
+            # full report documents.
+            rows = db.execute(
+                "SELECT id, status, document, summary_json, created_at FROM runs "
+                "WHERE summary_json IS NULL OR summary_json IN ('', '{}') OR created_at=0"
+            ).fetchall()
+            for run_id, status, raw, stored_summary, created_at in rows:
+                if stored_summary not in (None, "", "{}") and created_at:
+                    continue
+                try:
+                    run = json.loads(raw)
+                    if not isinstance(run, dict):
+                        run = {}
+                except (ValueError, TypeError):
+                    run = {}
+                run.setdefault("id", run_id)
+                run.setdefault("status", status or "")
+                try:
+                    created = float(run.get("created_at", created_at or 0))
+                except (TypeError, ValueError, OverflowError):
+                    created = 0.0
+                run["created_at"] = created
+                db.execute(
+                    "UPDATE runs SET summary_json=?, created_at=? WHERE id=?",
+                    (json.dumps(summary(run), ensure_ascii=False), created, run_id),
+                )
             db.execute("CREATE INDEX IF NOT EXISTS runs_status_idx ON runs(status)")
+            db.execute("CREATE INDEX IF NOT EXISTS runs_created_idx ON runs(created_at DESC, id DESC)")
         self.path.chmod(0o600)
 
     @contextmanager
@@ -523,6 +573,86 @@ class Store:
             items = [json.loads(row[0]) for row in db.execute("SELECT document FROM runs")]
         return sorted(items, key=lambda r: r["created_at"], reverse=True)
 
+    def active_runs(self):
+        with self.lock, self.db() as db:
+            items = [
+                json.loads(row[0])
+                for row in db.execute(
+                    "SELECT document FROM runs WHERE status IN (?, ?, ?)", tuple(ACTIVE)
+                )
+            ]
+        return items
+
+    def summaries(
+        self, *, limit=RUN_PAGE_SIZE, offset=0, cursor=None, query="", cursor_page=False
+    ):
+        """Read compact run summaries with either offset or keyset pagination.
+
+        Supplying ``cursor`` opts into a stable keyset page envelope. The
+        default and offset forms return arrays for compatibility with older
+        Workspace clients.
+        """
+        if type(limit) is not int or not 1 <= limit <= RUN_PAGE_SIZE:
+            raise ValueError(f"limit must be between 1 and {RUN_PAGE_SIZE}")
+        if type(offset) is not int or offset < 0:
+            raise ValueError("offset must be a non-negative integer")
+        query = str(query or "").strip().casefold()[:100]
+        base_where = ""
+        base_params = []
+        if query:
+            base_where = "WHERE lower(summary_json) LIKE ?"
+            base_params.append(f"%{query}%")
+        where = base_where
+        params = list(base_params)
+        key = None
+        if cursor is not None:
+            try:
+                decoded = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode()
+                timestamp, run_id = decoded.split("\n", 1)
+                key = (float(timestamp), run_id)
+            except (ValueError, UnicodeDecodeError, TypeError):
+                raise ValueError("分页标记格式不正确。") from None
+            if not run_id or len(run_id) > 128:
+                raise ValueError("分页标记格式不正确。")
+            cursor_page = True
+        with self.lock, self.db() as db:
+            if cursor_page:
+                if cursor is not None:
+                    keyset = (
+                        "(created_at < ? OR (created_at = ? AND id < ?))"
+                    )
+                    where += (" AND " if where else "WHERE ") + keyset
+                    params.extend((key[0], key[0], key[1]))
+                rows = db.execute(
+                    f"SELECT summary_json, created_at, id FROM runs {where} "
+                    "ORDER BY created_at DESC, id DESC LIMIT ?",
+                    (*params, limit + 1),
+                ).fetchall()
+                has_more = len(rows) > limit
+                rows = rows[:limit]
+                items = [json.loads(row[0]) for row in rows]
+                next_cursor = None
+                if has_more and rows:
+                    timestamp, run_id = rows[-1][1], rows[-1][2]
+                    next_cursor = base64.urlsafe_b64encode(
+                        f"{timestamp:.17g}\n{run_id}".encode()
+                    ).decode().rstrip("=")
+                total = db.execute(
+                    f"SELECT COUNT(*) FROM runs {base_where}",
+                    base_params,
+                ).fetchone()[0]
+                return {
+                    "items": items,
+                    "next_cursor": next_cursor,
+                    "has_more": has_more,
+                    "total": total,
+                }
+            rows = db.execute(
+                f"SELECT summary_json FROM runs {where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
     def get(self, run_id):
         with self.lock, self.db() as db:
             row = db.execute("SELECT document FROM runs WHERE id=?", (run_id,)).fetchone()
@@ -531,11 +661,15 @@ class Store:
         return json.loads(row[0])
 
     def put(self, run):
+        raw = json.dumps(run, ensure_ascii=False)
+        created_at = _created_at(run)
         with self.lock, self.db() as db:
             db.execute(
-                "INSERT INTO runs(id, status, document) VALUES (?, ?, ?) "
-                "ON CONFLICT(id) DO UPDATE SET status=excluded.status, document=excluded.document",
-                (run["id"], run.get("status", ""), json.dumps(run, ensure_ascii=False)),
+                "INSERT INTO runs(id, status, document, summary_json, created_at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET status=excluded.status, document=excluded.document, "
+                "summary_json=excluded.summary_json, created_at=excluded.created_at",
+                (run["id"], run.get("status", ""), raw,
+                 json.dumps(summary(run), ensure_ascii=False), created_at),
             )
 
     def claim_if_idle(self, run):
@@ -547,10 +681,45 @@ class Store:
             ).fetchone():
                 return False
             db.execute(
-                "INSERT INTO runs(id, status, document) VALUES (?, ?, ?)",
-                (run["id"], run["status"], json.dumps(run, ensure_ascii=False)),
+                "INSERT INTO runs(id, status, document, summary_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                (run["id"], run["status"], json.dumps(run, ensure_ascii=False),
+                 json.dumps(summary(run), ensure_ascii=False), _created_at(run)),
             )
             return True
+
+    def claim_for_resume(self, run_id):
+        """Atomically claim an interrupted run for an explicit resume request."""
+        with self.lock, self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute(
+                "SELECT 1 FROM runs WHERE status IN (?, ?, ?) LIMIT 1", tuple(ACTIVE)
+            ).fetchone():
+                raise ValueError("已有分析正在运行，请等待完成或先停止当前分析。")
+            row = db.execute(
+                "SELECT status, document FROM runs WHERE id=?", (run_id,)
+            ).fetchone()
+            if not row:
+                raise KeyError("未找到这次分析。")
+            if row[0] not in {"interrupted", "failed", "cancelled"}:
+                raise ValueError("这次分析当前不能继续。")
+            run = json.loads(row[1])
+            run.update(
+                status="queued",
+                finished_at=None,
+                stage="正在继续研究",
+                error=None,
+            )
+            db.execute(
+                "UPDATE runs SET status=?, document=?, summary_json=?, created_at=? WHERE id=?",
+                (
+                    run["status"],
+                    json.dumps(run, ensure_ascii=False),
+                    json.dumps(summary(run), ensure_ascii=False),
+                    _created_at(run),
+                    run_id,
+                ),
+            )
+            return run
 
     def mutate(self, run_id, fn):
         with self.lock, self.db() as db:
@@ -561,23 +730,190 @@ class Store:
             run = json.loads(row[0])
             fn(run)
             db.execute(
-                "UPDATE runs SET status=?, document=? WHERE id=?",
-                (run.get("status", ""), json.dumps(run, ensure_ascii=False), run_id),
+                "UPDATE runs SET status=?, document=?, summary_json=?, created_at=? WHERE id=?",
+                (run.get("status", ""), json.dumps(run, ensure_ascii=False),
+                 json.dumps(summary(run), ensure_ascii=False), _created_at(run), run_id),
             )
             return run
 
 
 def summary(run):
-    return {k: v for k, v in run.items() if k not in ("reports", "events")}
+    return {k: v for k, v in run.items() if k not in ("reports", "events", "quality")}
+
+
+def _created_at(run):
+    try:
+        value = float(run.get("created_at", 0))
+        return value if value >= 0 and value < float("inf") else 0.0
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _sanitize_quality(value):
+    if not isinstance(value, dict) or value.get("status") not in {
+        "available", "sparse", "unavailable", "unknown"
+    }:
+        return None
+    if not isinstance(value.get("summary"), str) or not isinstance(value.get("reports"), dict):
+        return None
+    if type(value.get("evidence_count")) is not int or not 0 <= value["evidence_count"] <= 1_000_000:
+        return None
+    as_of = value.get("as_of")
+    if not isinstance(as_of, str) or len(as_of) > 10:
+        return None
+    reports = {}
+    for key, report in list(value["reports"].items())[:16]:
+        if not isinstance(key, str) or len(key) > 60 or not isinstance(report, dict):
+            continue
+        status = report.get("status")
+        sources = report.get("sources", [])
+        if status not in {"available", "sparse", "unavailable", "unknown"} or not isinstance(sources, list):
+            continue
+        clean_sources = []
+        for source in sources[:100]:
+            if not isinstance(source, dict):
+                continue
+            sample_count = source.get("sample_count")
+            if sample_count is not None and (
+                type(sample_count) is not int or not 0 <= sample_count <= 100_000_000
+            ):
+                sample_count = None
+            dates = source.get("observed_dates")
+            if not isinstance(dates, dict):
+                dates = {}
+            clean_sources.append(
+                {
+                    "id": redact(str(source.get("id", ""))[:80]),
+                    "source": redact(str(source.get("source", ""))[:120]),
+                    "sample_count": sample_count,
+                    "observed_dates": {
+                        name: (redact(str(dates.get(name))[:32]) if dates.get(name) is not None else None)
+                        for name in ("start", "end")
+                    },
+                    "coverage_caveat": redact(str(source.get("coverage_caveat", ""))[:500]),
+                }
+            )
+        clean_report = {"status": status, "sources": clean_sources}
+        note = report.get("note")
+        if isinstance(note, str):
+            clean_report["note"] = redact(note[:500])
+        reports[key] = clean_report
+    clean = {
+        "status": value["status"],
+        "summary": redact(value["summary"][:500]),
+        "reports": reports,
+        "evidence_count": value["evidence_count"],
+        "as_of": as_of,
+    }
+    if len(json.dumps(clean, ensure_ascii=False)) > 64 * 1024:
+        return None
+    return clean
+
+
+_MARKDOWN_META_CHARS = re.compile(r"([\\`*_{}\[\]()#+.!|<>~-])")
+_QUALITY_ANALYST_KEYS = {
+    "market": "market_report",
+    "social": "sentiment_report",
+    "news": "news_report",
+    "fundamentals": "fundamentals_report",
+}
+
+
+def _markdown_metadata(value):
+    """Render untrusted evidence metadata as plain Markdown text."""
+    text = " ".join(str(value or "").replace("\r", "\n").split())
+    return _MARKDOWN_META_CHARS.sub(r"\\\1", text)
+
+
+_QUALITY_STATUS_LABELS = {
+    "available": "已获取数据",
+    "sparse": "覆盖有限",
+    "unavailable": "资料不足",
+    "unknown": "未验证",
+}
+
+
+def _quality_status_label(status):
+    return _QUALITY_STATUS_LABELS.get(status, _QUALITY_STATUS_LABELS["unknown"])
+
+
+def _evidence_export(run):
+    quality = _sanitize_quality(run.get("quality"))
+    legacy = quality is None
+    if legacy:
+        quality = {
+            "status": "unknown",
+            "summary": "旧版记录没有证据质量记录，无法根据报告正文回推。",
+            "reports": {},
+        }
+
+    selected = (run.get("config") or {}).get("analysts")
+    report_keys = [
+        _QUALITY_ANALYST_KEYS[key]
+        for key in selected or []
+        if key in _QUALITY_ANALYST_KEYS
+    ]
+    if not report_keys and not legacy:
+        report_keys = list(quality["reports"])
+
+    lines = [
+        "## 证据状态",
+        "",
+        f"整体状态：{_quality_status_label(quality['status'])}。"
+        f"{_markdown_metadata(quality['summary'])}",
+    ]
+    if legacy:
+        lines.append("未保存的历史证据不能从报告文字中补认。")
+    for report_key in report_keys:
+        label = LABELS.get(report_key, report_key)
+        report = quality["reports"].get(
+            report_key, {"status": "unknown", "sources": []}
+        )
+        lines.extend(
+            [
+                "",
+                f"- {_markdown_metadata(label)}：{_quality_status_label(report['status'])}。",
+            ]
+        )
+        if report.get("note"):
+            lines.append(f"  - 说明：{_markdown_metadata(report['note'])}")
+        if not report["sources"]:
+            lines.append("  - 来源：无采集记录。")
+            continue
+        for source in report["sources"]:
+            dates = source["observed_dates"]
+            start = _markdown_metadata(dates.get("start") or "未提供")
+            end = _markdown_metadata(dates.get("end") or "未提供")
+            sample_count = (
+                str(source["sample_count"])
+                if source["sample_count"] is not None
+                else "未报告"
+            )
+            lines.append(
+                "  - 来源：{source}；证据 ID：{evidence_id}；样本数：{count}；"
+                "观察日期：{start} 至 {end}；覆盖说明：{caveat}。".format(
+                    source=_markdown_metadata(source["source"]),
+                    evidence_id=_markdown_metadata(source["id"] or "未提供"),
+                    count=sample_count,
+                    start=start,
+                    end=end,
+                    caveat=_markdown_metadata(source["coverage_caveat"] or "未提供"),
+                )
+            )
+    return "\n".join(lines)
 
 
 def document(run):
     config = run["config"]
+    quality = _sanitize_quality(run.get("quality"))
+    rating = run.get("rating") or "尚未生成"
+    if quality and quality["status"] == "unavailable":
+        rating = "资料不足·暂不评级"
     text = (
         f"# {config['ticker']} 投研报告\n\n分析日期：{config['date']}  \n"
         f"模型服务：{config['provider']}  \n快速模型：{config['quick_model']}  \n"
         f"深度模型：{config['deep_model']}  \n状态：{run['status']}  \n"
-        f"最终评级：{run.get('rating') or '尚未生成'}\n\n"
+        f"最终评级：{rating}\n\n{_evidence_export(run)}\n\n"
     )
     for key, label in LABELS.items():
         if run["reports"].get(key):
@@ -673,18 +1009,42 @@ def stop_process(process, *, force=False):
         return
     with suppress(ProcessLookupError, PermissionError):
         if os.name == "nt":
-            (process.kill if force else process.terminate)()
+            if force:
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            else:
+                try:
+                    process.send_signal(signal.CTRL_BREAK_EVENT)
+                except (OSError, ValueError):
+                    process.terminate()
         else:
             os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
 
 
 class Manager:
-    def __init__(self, store, worker_cmd=None):
+    def __init__(
+        self,
+        store,
+        worker_cmd=None,
+        *,
+        run_timeout=RUN_TIMEOUT_SECONDS,
+        llm_call_limit=RUN_LLM_CALL_LIMIT,
+        token_limit=RUN_TOKEN_LIMIT,
+    ):
         self.store = store
         self.lock = threading.RLock()
         self.processes = {}
+        self.run_timeout = max(1.0, float(run_timeout))
+        self.llm_call_limit = max(1, int(llm_call_limit))
+        self.token_limit = max(1, int(token_limit))
+        self._finished = {}
+        self._termination_reason = {}
         self.worker_cmd = worker_cmd or [sys.executable, "-u", "-m", "webapp.worker"]
-        for run in store.all():
+        for run in store.active_runs():
             if run["status"] in ACTIVE:
                 run.update(
                     status="interrupted",
@@ -707,52 +1067,223 @@ class Manager:
                 "rating": None,
                 "reports": {},
                 "events": [],
-                "stats": {"llm_calls": 0, "tool_calls": 0, "tokens_in": 0, "tokens_out": 0},
+                "stats": {
+                    "llm_calls": 0,
+                    "tool_calls": 0,
+                    "tokens_in": None,
+                    "tokens_out": None,
+                    "usage_known_calls": 0,
+                    "usage_reported": False,
+                    "usage_complete": False,
+                },
+                "quality": None,
                 "error": None,
             }
             if not self.store.claim_if_idle(run):
                 raise ValueError("已有分析正在运行，请等待完成或先停止当前分析。")
-            process = None
+            workdir = self.store.root / "runs" / run_id
+            workdir.mkdir(parents=True, mode=0o700)
+            workdir.chmod(0o700)
+            return self._launch(
+                run_id,
+                config,
+                workdir,
+                resume=False,
+                stats_base=run["stats"],
+                llm_calls_left=self.llm_call_limit,
+                tokens_left=self.token_limit,
+            )
+
+    def resume(self, run_id):
+        if not isinstance(run_id, str) or not re.fullmatch(r"[a-f0-9]{32}", run_id):
+            raise KeyError("未找到这次分析。")
+        existing = self.store.get(run_id)
+        if existing.get("status") not in {"interrupted", "failed", "cancelled"}:
+            raise ValueError("这次分析当前不能继续。")
+        config = validate_run(existing.get("config"), check_credentials=True)
+        with self.lock:
+            done = self._finished.get(run_id)
+            if run_id in self.processes and (done is None or not done.is_set()):
+                raise ValueError("这次分析仍在停止，请稍后再继续。")
+            runs_root = (self.store.root / "runs").resolve()
+            run_path = runs_root / run_id
+            if run_path.is_symlink():
+                raise ValueError("分析工作目录不可继续。")
+            workdir = run_path.resolve()
             try:
-                workdir = self.store.root / "runs" / run_id
-                workdir.mkdir(parents=True, mode=0o700)
-                workdir.chmod(0o700)
-                process = subprocess.Popen(
-                    self.worker_cmd,
-                    cwd=ROOT,
-                    env=worker_environment(config),
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding="utf-8",
-                    bufsize=1,
-                    **process_group_options(),
+                workdir.relative_to(runs_root)
+            except ValueError:
+                raise ValueError("分析工作目录不可继续。") from None
+            if not self._has_saved_checkpoint(workdir, config["ticker"]):
+                raise ValueError("这次研究没有可恢复的检查点，请开始新的研究。")
+
+            run = self.store.claim_for_resume(run_id)
+            stats = run.get("stats") if isinstance(run.get("stats"), dict) else {}
+            stats_base = {
+                key: stats.get(key, 0) if type(stats.get(key, 0)) is int else 0
+                for key in ("llm_calls", "tool_calls")
+            }
+            stats_base["usage_known_calls"] = (
+                stats.get("usage_known_calls", 0)
+                if type(stats.get("usage_known_calls", 0)) is int
+                and stats.get("usage_known_calls", 0) >= 0
+                else 0
+            )
+            stats_base["usage_reported"] = (
+                stats.get("usage_reported") is True or stats_base["usage_known_calls"] > 0
+            )
+            for key in ("tokens_in", "tokens_out"):
+                value = stats.get(key)
+                stats_base[key] = (
+                    value
+                    if stats_base["usage_reported"] and type(value) is int and value >= 0
+                    else 0
                 )
-                self.processes[run_id] = process
-                process.stdin.write(
-                    json.dumps({"config": config, "directory": str(workdir)}) + "\n"
+            llm_calls_left = max(0, self.llm_call_limit - stats_base["llm_calls"])
+            tokens_left = max(
+                0,
+                self.token_limit - stats_base["tokens_in"] - stats_base["tokens_out"],
+            )
+            workdir.mkdir(parents=True, mode=0o700, exist_ok=True)
+            workdir.chmod(0o700)
+            return self._launch(
+                run_id,
+                config,
+                workdir,
+                resume=True,
+                stats_base=stats_base,
+                llm_calls_left=llm_calls_left,
+                tokens_left=tokens_left,
+            )
+
+    @staticmethod
+    def _has_saved_checkpoint(workdir, ticker):
+        """Check that this run directory has persisted LangGraph state before queueing resume."""
+        from tradingagents.dataflows.symbols import safe_ticker_component
+
+        checkpoint_dir = Path(workdir) / "cache" / "checkpoints"
+        if checkpoint_dir.is_symlink() or not checkpoint_dir.is_dir():
+            return False
+        checkpoint_path = checkpoint_dir / f"{safe_ticker_component(ticker).upper()}.db"
+        if checkpoint_path.is_symlink() or not checkpoint_path.is_file():
+            return False
+        connection = None
+        try:
+            connection = sqlite3.connect(
+                f"{checkpoint_path.as_uri()}?mode=ro", uri=True, timeout=1
+            )
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
                 )
-                process.stdin.close()
-            except Exception:
-                if process is not None:
-                    stop_process(process, force=True)
-                    for stream in (process.stdin, process.stdout):
-                        if stream:
-                            with suppress(OSError):
-                                stream.close()
-                    self.processes.pop(run_id, None)
+            }
+            return "checkpoints" in tables and connection.execute(
+                "SELECT 1 FROM checkpoints LIMIT 1"
+            ).fetchone() is not None
+        except (sqlite3.Error, OSError, ValueError):
+            return False
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def _launch(
+        self,
+        run_id,
+        config,
+        workdir,
+        *,
+        resume,
+        stats_base,
+        llm_calls_left,
+        tokens_left,
+    ):
+        process = None
+        try:
+            process = subprocess.Popen(
+                self.worker_cmd,
+                cwd=ROOT,
+                env=worker_environment(config),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                bufsize=1,
+                **process_group_options(),
+            )
+            self.processes[run_id] = process
+            done = threading.Event()
+            self._finished[run_id] = done
+            self._termination_reason[run_id] = None
+            process.stdin.write(
+                json.dumps(
+                    {
+                        "config": config,
+                        "directory": str(workdir),
+                        "resume": resume,
+                        "stats_base": stats_base,
+                        "limits": {
+                            "llm_calls": llm_calls_left,
+                            "tokens": tokens_left,
+                        },
+                    }
+                )
+                + "\n"
+            )
+            process.stdin.close()
+        except Exception:
+            if process is not None:
+                stop_process(process, force=True)
+                for stream in (process.stdin, process.stdout):
+                    if stream:
+                        with suppress(OSError):
+                            stream.close()
+                self.processes.pop(run_id, None)
+            done = self._finished.pop(run_id, None)
+            self._termination_reason.pop(run_id, None)
+            if done:
+                done.set()
+            self.store.mutate(
+                run_id,
+                lambda record: record.update(
+                    status="failed", finished_at=time.time(), error="分析进程启动失败。"
+                ),
+            )
+            raise
+        threading.Thread(target=self._consume, args=(run_id, process, done), daemon=True).start()
+        threading.Thread(
+            target=self._watch_deadline,
+            args=(run_id, process, done),
+            daemon=True,
+        ).start()
+        return self.store.get(run_id)
+
+    def _watch_deadline(self, run_id, process, done):
+        if done.wait(self.run_timeout) or process.poll() is not None:
+            return
+        with self.lock:
+            if done.is_set() or process.poll() is not None:
+                return
+            self._termination_reason[run_id] = "timeout"
+            with suppress(Exception):
                 self.store.mutate(
                     run_id,
-                    lambda r: r.update(
-                        status="failed", finished_at=time.time(), error="分析进程启动失败。"
+                    lambda run: run.update(
+                        status="failed",
+                        finished_at=time.time(),
+                        stage="分析超时",
+                        error="分析用时过长，已停止进程并保留已生成的报告。",
                     ),
                 )
-                raise
-            threading.Thread(target=self._consume, args=(run_id, process), daemon=True).start()
-            return self.store.get(run_id)
+            stop_process(process)
 
-    def _consume(self, run_id, process):
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            stop_process(process, force=True)
+
+    def _consume(self, run_id, process, done):
         tail = []
         protocol_error = False
         try:
@@ -778,7 +1309,7 @@ class Manager:
                 if not isinstance(event, dict):
                     continue
                 kind = event.get("type")
-                if kind not in {"report", "stage", "stats", "result", "error", "log"}:
+                if kind not in {"report", "stage", "stats", "result", "error", "log", "quality"}:
                     continue
                 if kind == "report" and (
                     event.get("key") not in LABELS or not isinstance(event.get("text"), str)
@@ -790,11 +1321,36 @@ class Manager:
                     stats = event.get("stats")
                     if not isinstance(stats, dict):
                         continue
-                    event["stats"] = {
+                    clean_stats = {
                         key: value
-                        for key in ("llm_calls", "tool_calls", "tokens_in", "tokens_out")
+                        for key in ("llm_calls", "tool_calls")
                         if type(value := stats.get(key)) is int and 0 <= value <= 10**12
                     }
+                    for key in ("tokens_in", "tokens_out"):
+                        value = stats.get(key)
+                        if value is None or (type(value) is int and 0 <= value <= 10**12):
+                            clean_stats[key] = value
+                    known_calls = stats.get("usage_known_calls")
+                    clean_stats["usage_known_calls"] = (
+                        known_calls
+                        if type(known_calls) is int and 0 <= known_calls <= 10**12
+                        else 0
+                    )
+                    reported = stats.get("usage_reported")
+                    clean_stats["usage_reported"] = (
+                        reported
+                        if type(reported) is bool
+                        else clean_stats["usage_known_calls"] > 0
+                        or any(clean_stats.get(key, 0) > 0 for key in ("tokens_in", "tokens_out"))
+                    )
+                    complete = stats.get("usage_complete")
+                    clean_stats["usage_complete"] = complete if type(complete) is bool else False
+                    event["stats"] = clean_stats
+                if kind == "quality":
+                    quality = _sanitize_quality(event.get("quality"))
+                    if quality is None:
+                        continue
+                    event["quality"] = quality
                 if (
                     kind == "result"
                     and event.get("rating") is not None
@@ -815,6 +1371,8 @@ class Manager:
                     elif kind == "result":
                         rating = event.get("rating")
                         run["rating"] = redact(rating[:250]) if isinstance(rating, str) else None
+                    elif kind == "quality":
+                        run["quality"] = event["quality"]
                     elif kind == "error":
                         run["error"] = redact(event["text"][:3000])
                     if kind in ("log", "stage", "error"):
@@ -833,6 +1391,14 @@ class Manager:
             code = process.wait()
 
             def finish(run):
+                if self._termination_reason.get(run_id) == "timeout":
+                    run.update(
+                        status="failed",
+                        stage="分析超时",
+                        error="分析用时过长，已停止进程并保留已生成的报告。",
+                    )
+                    run["finished_at"] = run.get("finished_at") or time.time()
+                    return
                 if run["status"] in ("cancelling", "cancelled"):
                     run.update(status="cancelled", stage="已停止")
                 elif code == 0 and run["reports"].get("final_trade_decision"):
@@ -872,7 +1438,12 @@ class Manager:
             if process.stdout:
                 process.stdout.close()
             with self.lock:
-                self.processes.pop(run_id, None)
+                if self.processes.get(run_id) is process:
+                    self.processes.pop(run_id, None)
+                    if self._finished.get(run_id) is done:
+                        self._finished.pop(run_id, None)
+                        self._termination_reason.pop(run_id, None)
+            done.set()
 
     def cancel(self, run_id):
         with self.lock:

@@ -160,12 +160,16 @@ def test_fetches_dated_relevant_news_and_community_without_last_time_fallback(mo
         result["news"]["items"][0]["date"] == "2026-10-20"
     )  # UTC timestamp converted to China time
     assert result["news"]["items"][0]["source"] == "新闻转载·证券时报网"
+    assert result["news"]["items"][0]["source_category"] == "media_reprint"
+    assert result["news"]["items"][0]["published_at"] == "2026-10-20T02:00:00+08:00"
     assert "忽略" not in result["news"]["items"][0]["text"]
     assert result["community"]["status"] == "ok"
     community = {item["title"]: item for item in result["community"]["items"]}
     assert set(community) == {"相关长文", "股民发言"}
     assert community["相关长文"]["source"].startswith("自媒体观点·")
+    assert community["相关长文"]["source_category"] == "self_media_opinion"
     assert community["股民发言"]["source"].startswith("股民观点·")
+    assert community["股民发言"]["source_category"] == "unverified_forum_user_opinion"
     assert all(
         "2004" not in item["url"] and "2005" not in item["url"] for item in community.values()
     )
@@ -181,6 +185,34 @@ def test_fetches_dated_relevant_news_and_community_without_last_time_fallback(mo
     assert len(result["news"]["items"]) == 1
 
 
+def test_full_publish_time_keeps_newer_forum_posts_ahead_of_recommendations(monkeypatch):
+    recommendations = [
+        row(
+            str(6000 + index),
+            "20",
+            title=f"推荐自媒体{index}",
+            published=f"2026-10-20 09:{index:02d}:00",
+        )
+        for index in range(12)
+    ]
+    newer_forum_post = row(
+        "7000",
+        "0",
+        title="更新股民帖子",
+        published="2026-10-20 15:30:00",
+    )
+    install_feeds(monkeypatch, recommendations, [newer_forum_post])
+
+    result = eastmoney.fetch_china_sources("600519", "2026-10-20", "2026-10-20")
+
+    community = result["community"]["items"]
+    assert len(community) == eastmoney._MAX_ITEMS_PER_KIND
+    assert community[0]["title"] == "更新股民帖子"
+    assert community[0]["published_at"] == "2026-10-20T15:30:00+08:00"
+    assert community[0]["source_category"] == "unverified_forum_user_opinion"
+    assert sum(item["source_category"] == "self_media_opinion" for item in community) == 11
+
+
 def test_labels_enterprise_account_as_view_not_company_announcement(monkeypatch):
     enterprise_view = row("3001", "0", title="企业账号发言", nickname="公司账号")
     enterprise_view["post_user"]["user_extendinfos"]["is_enterprise"] = "true"
@@ -188,7 +220,21 @@ def test_labels_enterprise_account_as_view_not_company_announcement(monkeypatch)
     install_feeds(monkeypatch, [enterprise_view, announcement])
     result = eastmoney.fetch_china_sources("600519", "2026-10-20", "2026-10-20")
     assert result["community"]["items"][0]["source"] == "企业账号观点·公司账号"
+    assert result["community"]["items"][0]["source_category"] == "enterprise_account_opinion"
     assert result["news"]["items"][0]["source"] == "官方公告"
+    assert result["news"]["items"][0]["source_category"] == "official_announcement"
+
+
+def test_labels_verified_community_account_as_its_own_source_category(monkeypatch):
+    verified = row("3101", "0", title="认证账号观点", nickname="认证作者")
+    verified["post_user"]["user_v"] = 1
+    install_feeds(monkeypatch, [verified])
+
+    result = eastmoney.fetch_china_sources("600519", "2026-10-20", "2026-10-20")
+
+    item = result["community"]["items"][0]
+    assert item["source"] == "平台认证账号观点·认证作者"
+    assert item["source_category"] == "verified_account_opinion"
 
 
 def test_reports_uncovered_date_window_as_empty(monkeypatch):

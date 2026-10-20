@@ -4,9 +4,15 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
   buildCoverageItems,
+  buildEvidenceItems,
   buildMarketGeometry,
+  buildQualitySummary,
   buildUsageItems,
+  hasKnownUsageData,
   prepareMarketSeries,
+  priceBasisText,
+  qualityStatusLabel,
+  usageSummary,
 } = require("../static/visuals.js");
 
 test("market series is date sorted, bounded by as-of, and drops invalid closes", () => {
@@ -84,6 +90,101 @@ test("usage preserves real zero values and marks missing or invalid values unava
     buildUsageItems({}).every((item) => !item.available),
     true,
   );
+  const zeroUsage = buildUsageItems({ stats: { tokens_in: 0, tokens_out: 0 } });
+  assert.equal(hasKnownUsageData(zeroUsage), true);
+  assert.equal(hasKnownUsageData(buildUsageItems({})), false);
+});
+
+test("usage summary distinguishes full, partial, missing, and unverified history", () => {
+  assert.deepEqual(
+    usageSummary({
+      stats: {
+        tokens_in: 0,
+        tokens_out: 0,
+        llm_calls: 2,
+        usage_known_calls: 2,
+        usage_reported: true,
+        usage_complete: true,
+      },
+    }),
+    { state: "complete", label: "完整用量统计" },
+  );
+  assert.equal(
+    usageSummary({
+      stats: {
+        tokens_in: 18,
+        tokens_out: 9,
+        llm_calls: 4,
+        usage_known_calls: 2,
+        usage_reported: true,
+        usage_complete: false,
+      },
+    }).label,
+    "部分统计 · 2 / 4 次模型调用报告用量",
+  );
+  assert.deepEqual(
+    usageSummary({ stats: { tokens_in: null, tokens_out: null } }),
+    { state: "unreported", label: "未报告用量" },
+  );
+  assert.deepEqual(
+    usageSummary({ stats: { tokens_in: 0, tokens_out: 0 } }),
+    { state: "unknown", label: "用量状态未验证" },
+  );
+});
+
+test("evidence status defaults to unknown and never implies sufficiency", () => {
+  assert.deepEqual(buildQualitySummary({}), {
+    status: "unknown",
+    label: "未验证",
+    summary: "此研究记录没有经过验证的证据状态。",
+    evidenceCount: null,
+    asOf: null,
+  });
+  assert.equal(qualityStatusLabel("available"), "已获取数据");
+  assert.equal(qualityStatusLabel("sparse"), "覆盖有限");
+  assert.equal(qualityStatusLabel("unavailable"), "资料不足");
+  assert.equal(qualityStatusLabel("excellent"), "未验证");
+});
+
+test("evidence quality stays separate from whether each report was generated", () => {
+  const items = buildEvidenceItems(
+    {
+      status: "completed",
+      config: { analysts: ["market", "news"] },
+      reports: { market_report: "Generated market report" },
+      quality: {
+        status: "sparse",
+        reports: {
+          market_report: {
+            status: "sparse",
+            sources: [
+              {
+                source: "Price API",
+                sample_count: 0,
+                observed_dates: { start: "2026-01-01", end: "2026-01-02" },
+                coverage_caveat: "仅有两个交易日。",
+              },
+            ],
+          },
+        },
+      },
+    },
+    { market_report: "技术面分析", news_report: "新闻分析" },
+  );
+  assert.equal(items[0].generation, "generated");
+  assert.equal(items[0].status, "sparse");
+  assert.equal(items[0].sources[0].sample_count, 0);
+  assert.equal(items[1].generation, "missing");
+  assert.equal(items[1].status, "unknown");
+
+  const inProgress = buildEvidenceItems({
+    status: "running",
+    config: { analysts: ["news"] },
+    reports: {},
+    quality: {},
+  });
+  assert.equal(inProgress[0].generation, "generating");
+  assert.equal(inProgress[0].status, "unknown");
 });
 
 test("market geometry handles flat and single-point histories with finite coordinates", () => {
@@ -92,4 +193,10 @@ test("market geometry handles flat and single-point histories with finite coordi
   assert.equal(geometry.points[0].x, 64 + (720 - 64 - 18) / 2);
   assert.equal(Number.isFinite(geometry.points[0].y), true);
   assert.equal(geometry.max > geometry.min, true);
+});
+
+test("market source text uses the returned price basis and labels missing metadata", () => {
+  assert.equal(priceBasisText({ price_basis: "yahoo_close_auto_adjust_false" }), "收盘价（不额外调整股息；历史可能按拆股调整）");
+  assert.equal(priceBasisText({ price_basis: "split-adjusted close" }), "split-adjusted close");
+  assert.equal(priceBasisText({}), "报价口径未提供");
 });

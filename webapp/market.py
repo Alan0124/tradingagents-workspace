@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 import yfinance as yf
 
 from tradingagents.dataflows.symbols import normalize_symbol
+from tradingagents.dataflows.vendors.yahoo.ohlcv import PRICE_BASIS, PRICE_BASIS_CAVEAT
 
 SOURCE = "Yahoo Finance"
 MARKET_TIMEOUT_SECONDS = 8
@@ -22,7 +23,7 @@ EMPTY_CACHE_TTL_SECONDS = 60
 MAX_CACHE_ENTRIES = 256
 
 _SYMBOL_RE = re.compile(r"[A-Z0-9^][A-Z0-9.^=\-]{0,30}\Z")
-_CACHE: OrderedDict[tuple[str, str], tuple[float, dict]] = OrderedDict()
+_CACHE: OrderedDict[tuple[str, str, str], tuple[float, dict]] = OrderedDict()
 _CACHE_LOCK = threading.RLock()
 
 
@@ -37,7 +38,7 @@ def _date_from_index(value) -> date | None:
         return None
 
 
-def _read_cache(key: tuple[str, str]) -> dict | None:
+def _read_cache(key: tuple[str, str, str]) -> dict | None:
     now = time.monotonic()
     with _CACHE_LOCK:
         entry = _CACHE.get(key)
@@ -51,7 +52,7 @@ def _read_cache(key: tuple[str, str]) -> dict | None:
         return copy.deepcopy(value)
 
 
-def _write_cache(key: tuple[str, str], value: dict, ttl: int) -> None:
+def _write_cache(key: tuple[str, str, str], value: dict, ttl: int) -> None:
     now = time.monotonic()
     with _CACHE_LOCK:
         for old_key, (expires_at, _) in list(_CACHE.items()):
@@ -125,7 +126,7 @@ def get_market_history(config: dict) -> dict:
         raise ValueError("研究配置中的分析日期无效。")
 
     as_of_text = as_of.isoformat()
-    key = (symbol, as_of_text)
+    key = (symbol, as_of_text, PRICE_BASIS)
     cached = _read_cache(key)
     if cached is not None:
         return cached
@@ -154,6 +155,8 @@ def get_market_history(config: dict) -> dict:
         "symbol": symbol,
         "as_of": as_of_text,
         "source": SOURCE,
+        "price_basis": PRICE_BASIS,
+        "price_basis_note": PRICE_BASIS_CAVEAT,
     }
     ttl = MARKET_CACHE_TTL_SECONDS if payload["series"] else EMPTY_CACHE_TTL_SECONDS
     _write_cache(key, payload, ttl)

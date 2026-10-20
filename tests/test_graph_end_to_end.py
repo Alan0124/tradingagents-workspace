@@ -148,6 +148,27 @@ def test_a_full_run_reaches_a_logged_decision(tmp_path, monkeypatch, offline, st
 
 
 @pytest.mark.unit
+def test_parallel_graph_tools_retain_run_scoped_evidence(tmp_path, monkeypatch, offline):
+    import json
+
+    from tradingagents.dataflows.evidence import EvidenceLedger
+
+    graph = _graph(tmp_path, monkeypatch, ScriptedModel())
+    ledger = EvidenceLedger(tmp_path / "receipts", TRADE_DATE,
+                            ["market", "news", "social", "fundamentals"])
+    with ledger.activate():
+        state, _ = graph.propagate("NVDA", TRADE_DATE)
+    archived = json.loads(ledger.path.read_text())
+    assert state["final_trade_decision"]
+    assert archived["quality"]["evidence_count"] >= 10
+    assert set(archived["quality"]["reports"]) == {
+        "market_report", "news_report", "sentiment_report", "fundamentals_report",
+    }
+    sources = {entry["source"] for entry in archived["evidence"]}
+    assert {"stocktwits", "reddit", "yfinance"} <= sources
+
+
+@pytest.mark.unit
 def test_an_interrupted_run_resumes_from_its_checkpoint(tmp_path, monkeypatch, offline):
     model = ScriptedModel(fail_at=12)            # past the analysts, before the decision
     graph = _graph(tmp_path, monkeypatch, model, checkpoint_enabled=True)

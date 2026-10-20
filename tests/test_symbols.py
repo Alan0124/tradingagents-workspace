@@ -5,7 +5,7 @@ import unittest
 import pytest
 
 from tradingagents.dataflows.errors import NoMarketDataError
-from tradingagents.dataflows.symbols import crypto_base, normalize_symbol
+from tradingagents.dataflows.symbols import crypto_base, mainland_symbol, normalize_symbol
 
 
 @pytest.mark.unit
@@ -68,6 +68,15 @@ class TestNormalizeSymbol(unittest.TestCase):
     def test_shanghai_sh_suffix_maps_to_yahoo_ss(self):
         self.assertEqual(normalize_symbol("600519.sh"), "600519.SS")
         self.assertEqual(normalize_symbol("600519.SS"), "600519.SS")
+
+    def test_mainland_aliases_resolve_across_data_sources(self):
+        for alias in ("600519", "SH600519", "600519.SH", "600519.SS"):
+            self.assertEqual(normalize_symbol(alias), "600519.SS")
+        for alias in ("000001", "SZ000001", "000001.SZ"):
+            self.assertEqual(normalize_symbol(alias), "000001.SZ")
+        self.assertEqual(normalize_symbol("BJ920001"), "920001.BJ")
+        for invalid in ("SH000001", "600519.SZ", "123456", "AAPL", None):
+            self.assertIsNone(mainland_symbol(invalid))
 
 
 @pytest.mark.unit

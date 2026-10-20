@@ -35,6 +35,9 @@ class TestVerifiedSnapshot:
         snap = validator.build_verified_market_snapshot("COF", "2026-05-13")
         assert "Verified market data snapshot for COF" in snap
         assert "Requested analysis date: 2026-05-13" in snap
+        assert f"Price basis: {validator.PRICE_BASIS}" in snap
+        assert "not a raw trade tape" in snap
+        assert "point-in-time" in snap
         assert "Latest trading row used: 2026-05-13" in snap
         assert "999.00" not in snap          # future row excluded
         assert "boll_lb" in snap             # indicators present

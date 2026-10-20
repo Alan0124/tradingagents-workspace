@@ -23,6 +23,7 @@ from webapp import __version__ as WORKSPACE_VERSION
 from webapp.core import (
     DATA,
     MD,
+    RUN_PAGE_SIZE,
     InstanceLock,
     Manager,
     Store,
@@ -33,7 +34,6 @@ from webapp.core import (
     refresh_models,
     report_html,
     save_settings,
-    summary,
 )
 from webapp.market import get_market_history
 
@@ -147,7 +147,7 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     **metadata(),
                     "token": self.server.token,
-                    "runs": [summary(r) for r in self.server.manager.store.all()],
+                    "runs": self.server.manager.store.summaries(limit=5),
                 }
             )
         if path == "/api/models":
@@ -163,7 +163,42 @@ class Handler(BaseHTTPRequestHandler):
             except RuntimeError as exc:
                 return self.send({"error": str(exc)}, 502)
         if path == "/api/runs":
-            return self.send([summary(r) for r in self.server.manager.store.all()])
+            query = parse_qs(parsed_url.query, keep_blank_values=True)
+            try:
+                limit_values = query.get("limit", [str(RUN_PAGE_SIZE)])
+                offset_values = query.get("offset", ["0"])
+                search_values = query.get("q", [""])
+                if any(len(values) != 1 for values in (limit_values, offset_values, search_values)):
+                    raise ValueError("分页参数不正确。")
+                limit = int(limit_values[0])
+                offset = int(offset_values[0])
+                search = search_values[0]
+                if len(search) > 100:
+                    raise ValueError("搜索内容过长。")
+                if "cursor" in query:
+                    cursor_values = query["cursor"]
+                    if len(cursor_values) != 1:
+                        raise ValueError("分页参数不正确。")
+                    cursor = cursor_values[0]
+                    if cursor in ("", "first"):
+                        cursor = None
+                    return self.send(
+                        self.server.manager.store.summaries(
+                            limit=limit,
+                            cursor=cursor,
+                            query=search,
+                            cursor_page=True,
+                        )
+                    )
+                return self.send(
+                    self.server.manager.store.summaries(
+                        limit=limit,
+                        offset=offset,
+                        query=search,
+                    )
+                )
+            except (ValueError, TypeError) as exc:
+                return self.send({"error": redact(str(exc))}, 400)
         if path == "/api/login":
             with self.server.login_lock:
                 return self.send(self.server.login.copy())
@@ -198,6 +233,26 @@ class Handler(BaseHTTPRequestHandler):
                     report_html(run),
                     content_type="text/html; charset=utf-8",
                     disposition=f'attachment; filename="{run["config"]["ticker"]}-{run["config"]["date"]}.html"',
+                )
+            if ext == "evidence.json":
+                run_root = (self.server.manager.store.root / "runs").resolve()
+                candidate_directory = run_root / parts[2]
+                if candidate_directory.is_symlink():
+                    raise KeyError("未找到证据文件。")
+                run_directory = candidate_directory.resolve()
+                try:
+                    run_directory.relative_to(run_root)
+                except ValueError:
+                    raise KeyError("未找到证据文件。") from None
+                if run_directory.parent != run_root:
+                    raise KeyError("未找到证据文件。")
+                evidence_path = run_directory / "evidence.json"
+                if not evidence_path.is_file() or evidence_path.is_symlink():
+                    raise KeyError("未找到证据文件。")
+                return self.send(
+                    evidence_path.read_bytes(),
+                    content_type="application/json; charset=utf-8",
+                    disposition=f'attachment; filename="{parts[2]}-evidence.json"',
                 )
         files = {
             "/": "index.html",
@@ -243,8 +298,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/login":
                 return self.send(self.server.start_login())
             parts = path.strip("/").split("/")
-            if len(parts) == 4 and parts[:2] == ["api", "runs"] and parts[3] == "cancel":
-                return self.send(self.server.manager.cancel(parts[2]))
+            if len(parts) == 4 and parts[:2] == ["api", "runs"]:
+                if parts[3] == "cancel":
+                    return self.send(self.server.manager.cancel(parts[2]))
+                if parts[3] == "resume":
+                    return self.send(self.server.manager.resume(parts[2]), 202)
             self.send({"error": "接口不存在。"}, 404)
         except (ValueError, TypeError) as exc:
             self.send({"error": redact(str(exc))}, 400)

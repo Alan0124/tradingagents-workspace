@@ -10,7 +10,12 @@ from stockstats import wrap
 from tradingagents.dataflows.errors import NoMarketDataError, VendorError
 from tradingagents.dataflows.symbols import normalize_symbol
 from tradingagents.dataflows.vendors.yahoo.common import raise_for_empty, yf_retry
-from tradingagents.dataflows.vendors.yahoo.ohlcv import _assert_ohlcv_not_stale, load_ohlcv
+from tradingagents.dataflows.vendors.yahoo.ohlcv import (
+    PRICE_BASIS,
+    PRICE_BASIS_CAVEAT,
+    _assert_ohlcv_not_stale,
+    load_ohlcv,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +36,12 @@ def get_YFin_data_online(
     # end_date row (and the current day when end_date is today). Request one day
     # past end_date so the requested range is actually inclusive (#986/#987).
     end_inclusive = (end_dt + relativedelta(days=1)).strftime("%Y-%m-%d")
-    data = yf_retry(lambda: yf.Ticker(canonical).history(start=start_date, end=end_inclusive))
+    data = yf_retry(lambda: yf.Ticker(canonical).history(
+        start=start_date,
+        end=end_inclusive,
+        auto_adjust=False,
+        actions=False,
+    ))
 
     # Empty result means the symbol is unknown/delisted. Raise a typed error
     # instead of returning prose: the routing layer turns it into a single
@@ -61,6 +71,8 @@ def get_YFin_data_online(
     label = canonical if canonical == symbol.upper() else f"{canonical} (from {symbol})"
     header = f"# Stock data for {label} from {start_date} to {end_date}\n"
     header += f"# Total records: {len(data)}\n\n"
+    header += f"# Price basis: {PRICE_BASIS}\n"
+    header += f"# Price caveat: {PRICE_BASIS_CAVEAT}\n\n"
 
     return header + csv_string
 
@@ -199,6 +211,7 @@ def get_stock_stats_indicators_window(
         + ind_string
         + "\n\n"
         + best_ind_params.get(indicator, "No description available.")
+        + f"\n\nPrice basis: {PRICE_BASIS}. {PRICE_BASIS_CAVEAT}"
     )
 
     return result_str
@@ -266,9 +279,18 @@ def get_stockstats_indicator(
 
 
 def get_closes(symbol: str, start_date: str, end_date: str) -> pd.Series:
-    """Daily closes from ``start_date`` up to, not including, ``end_date``."""
+    """Daily Yahoo Close prices through the exclusive ``end_date``.
+
+    This is a price-return series: cash dividends are not included, and Yahoo
+    may retrospectively adjust historical bars for splits.
+    """
     canonical = normalize_symbol(symbol)
-    history = yf_retry(lambda: yf.Ticker(canonical).history(start=start_date, end=end_date))
+    history = yf_retry(lambda: yf.Ticker(canonical).history(
+        start=start_date,
+        end=end_date,
+        auto_adjust=False,
+        actions=False,
+    ))
     return history["Close"] if history is not None and "Close" in history else pd.Series(dtype=float)
 
 

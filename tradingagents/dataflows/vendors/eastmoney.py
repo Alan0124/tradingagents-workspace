@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 from tradingagents.dataflows.errors import VendorUnavailableError
+from tradingagents.dataflows.symbols import mainland_symbol
 
 _PAGE_URL = "https://mguba.eastmoney.com/mguba/list/{code}"
 _API_URL = "https://mguba.eastmoney.com/mguba2020/interface/GetData.aspx?path=/webarticlelist/api/Article/WebArticleList"
@@ -33,9 +34,6 @@ _CACHE_TTL_SECONDS = 180
 _CACHE_MAX_ENTRIES = 64
 _CN_TZ = ZoneInfo("Asia/Shanghai")
 
-_SH_CODES = ("600", "601", "603", "605", "688", "689")
-_SZ_CODES = ("000", "001", "002", "003", "300", "301")
-_MARKET_RE = re.compile(r"^(?:(SH|SZ|BJ))?(\d{6})(?:\.(SH|SS|SZ|BJ))?$", re.I)
 _CACHE: dict[str, tuple[float, dict]] = {}
 _CACHE_LOCK = threading.Lock()
 
@@ -45,26 +43,8 @@ class _FetchError(Exception):
 
 
 def _normalize_a_share(ticker: str) -> str | None:
-    if not isinstance(ticker, str):
-        return None
-    match = _MARKET_RE.fullmatch(ticker.strip().upper())
-    if not match:
-        return None
-    prefix, code, suffix = match.groups()
-    if code.startswith(_SH_CODES):
-        market = "SH"
-    elif code.startswith(_SZ_CODES):
-        market = "SZ"
-    elif code.startswith(("4", "8", "92")):
-        market = "BJ"
-    else:
-        return None
-    supplied = "SH" if suffix == "SS" else suffix
-    if prefix and prefix != market:
-        return None
-    if supplied and supplied != market:
-        return None
-    return code
+    symbol = mainland_symbol(ticker)
+    return symbol[:6] if symbol else None
 
 
 def is_china_equity(ticker: str) -> bool:
@@ -81,23 +61,30 @@ def _date_arg(value: str) -> date | None:
         return None
 
 
-def _published_date(value) -> date | None:
-    """Use only the original publish field; source timestamps are China local."""
+def _published_at(value) -> datetime | None:
+    """Parse only the original publish field, normalized to China local time."""
     if not isinstance(value, str) or not value.strip():
         return None
     value = value.strip()
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
         try:
-            return date.fromisoformat(value)
+            published_date = date.fromisoformat(value)
         except ValueError:
             return None
+        return datetime.combine(published_date, datetime.min.time(), tzinfo=_CN_TZ)
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=_CN_TZ)
-    return parsed.astimezone(_CN_TZ).date()
+    return parsed.astimezone(_CN_TZ)
+
+
+def _published_date(value) -> date | None:
+    """Use only the original publish field; source timestamps are China local."""
+    published = _published_at(value)
+    return published.date() if published is not None else None
 
 
 def _clean_text(value, limit: int) -> str:
@@ -245,7 +232,10 @@ def _load_sources(code: str) -> dict:
         latest_error = str(exc)
 
     loaded = {
-        "rows": (page or {}).get("rows", []) + (latest or {}).get("rows", []),
+        # Prefer the explicit latest-post feed on exact timestamp ties; the
+        # bootstrap page can be recommendation-ranked and is only a second
+        # finite sample, not a more authoritative ordering.
+        "rows": (latest or {}).get("rows", []) + (page or {}).get("rows", []),
         "bar_info": (page or {}).get("bar_info", {}),
         "page_ok": page is not None,
         "latest_ok": latest is not None,
@@ -341,8 +331,22 @@ def _source(row: dict, kind: str) -> str:
     return f"股民观点·{nickname}"
 
 
+def _source_category(row: dict, kind: str) -> str:
+    """Name the source class evidenced by Eastmoney's row fields."""
+    if kind == "news":
+        return "official_announcement" if str(row.get("post_type")) == "3" else "media_reprint"
+    account_source = _account_source(row)
+    if account_source == "企业账号观点":
+        return "enterprise_account_opinion"
+    if account_source == "平台认证账号观点":
+        return "verified_account_opinion"
+    if str(row.get("post_type")) == "20":
+        return "self_media_opinion"
+    return "unverified_forum_user_opinion"
+
+
 def _item(row: dict, kind: str):
-    published = _published_date(row.get("post_publish_time"))
+    published = _published_at(row.get("post_publish_time"))
     if published is None:
         return None
     post_id = str(row.get("post_id") or "")
@@ -357,9 +361,11 @@ def _item(row: dict, kind: str):
     return {
         "title": title,
         "text": text,
-        "date": published.isoformat(),
+        "date": published.date().isoformat(),
+        "published_at": published.isoformat(timespec="seconds"),
         "url": f"https://mguba.eastmoney.com/mguba/article/0/{post_id}",
         "source": _source(row, kind),
+        "source_category": _source_category(row, kind),
         "_id": post_id,
     }
 
@@ -419,15 +425,16 @@ def _bucket(
         row_type = str(row.get("post_type"))
         if row_type not in expected_types:
             continue
-        pub_date = _published_date(row.get("post_publish_time"))
-        if pub_date is None:
+        published = _published_at(row.get("post_publish_time"))
+        if published is None:
             continue
+        pub_date = published.date()
         sample_dates.append(pub_date)
         if not start <= pub_date <= end or not _is_relevant(row, code, bar_name):
             continue
         extracted = _item(row, kind)
         if extracted is not None:
-            candidates.append((pub_date, extracted))
+            candidates.append((published, extracted))
     candidates.sort(key=lambda value: value[0], reverse=True)
 
     items = []
@@ -464,7 +471,10 @@ def _limit_total(result: dict) -> None:
         budget = max(0, per_kind - len(bucket["note"]))
         kept = []
         for item in bucket["items"]:
-            fixed = sum(len(item[key]) for key in ("title", "date", "url", "source"))
+            fixed = sum(
+                len(item.get(key, ""))
+                for key in ("title", "date", "published_at", "url", "source", "source_category")
+            )
             room = budget - fixed
             if room < 0:
                 break

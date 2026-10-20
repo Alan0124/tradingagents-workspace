@@ -70,6 +70,33 @@ _ALIASES = {
 # HKEX codes as Yahoo spells them: the number zero-padded to 4 digits (#957).
 _HK_CODE = re.compile(r"^(\d{1,5})\.HK$")
 _SHANGHAI_SH = re.compile(r"^(\d{6})\.SH$")
+_MAINLAND_CODE = re.compile(r"^(?:(SH|SZ|BJ))?(\d{6})(?:\.(SS|SH|SZ|BJ))?$")
+
+
+def mainland_symbol(raw: str) -> str | None:
+    """Resolve an A-share code without importing a vendor or making a request.
+
+    Explicit conflicting exchanges are rejected rather than silently repaired.
+    The code prefixes deliberately match the China news classifier.
+    """
+    if not isinstance(raw, str):
+        return None
+    match = _MAINLAND_CODE.fullmatch(raw.strip().upper())
+    if not match:
+        return None
+    prefix, code, suffix = match.groups()
+    if code.startswith(("600", "601", "603", "605", "688", "689")):
+        market = "SH"
+    elif code.startswith(("000", "001", "002", "003", "300", "301")):
+        market = "SZ"
+    elif code.startswith(("4", "8", "92")):
+        market = "BJ"
+    else:
+        return None
+    suffix = "SH" if suffix == "SS" else suffix
+    if (prefix and prefix != market) or (suffix and suffix != market):
+        return None
+    return f"{code}.{'SS' if market == 'SH' else market}"
 
 
 # Crypto quote currencies that all map to Yahoo's USD pair. Yahoo lists only
@@ -110,7 +137,7 @@ def normalize_symbol(raw: str) -> str:
       3. Forex rule: six letters that are two ISO currency codes -> ``PAIR=X``.
       4. HK rule: a numeric ``.HK`` code -> Yahoo's 4-digit padding
          (``09992.HK`` -> ``9992.HK``, ``700.HK`` -> ``0700.HK``).
-      5. Shanghai rule: ``600519.SH`` -> ``600519.SS``.
+      5. Mainland rule: ``600519``, ``SH600519``, ``600519.SH`` -> ``600519.SS``.
       6. Otherwise the upper-cased symbol is returned unchanged (plain
          equities, ETFs, Yahoo-native symbols like ``GC=F`` or ``^GSPC``).
 
@@ -134,6 +161,8 @@ def normalize_symbol(raw: str) -> str:
         canonical = f"{s}=X"
     elif hk := _HK_CODE.match(s):
         canonical = f"{int(hk.group(1)):04d}.HK"
+    elif mainland := mainland_symbol(s):
+        canonical = mainland
     elif sh := _SHANGHAI_SH.match(s):
         canonical = f"{sh.group(1)}.SS"
     else:

@@ -17,6 +17,17 @@ logger = logging.getLogger(__name__)
 # enough to catch the year-old frames yfinance occasionally returns (#1021).
 MAX_OHLCV_STALE_DAYS = 10
 
+# Keep every consumer on Yahoo's Close column rather than yfinance's dividend-
+# adjusted Adj Close. Yahoo may still restate history for splits, so this is not
+# a raw trade tape or a guaranteed point-in-time price vintage.
+PRICE_BASIS = "yahoo_close_auto_adjust_false"
+PRICE_BASIS_CAVEAT = (
+    "Uses Yahoo Finance Close with auto_adjust=False; cash dividends are excluded and "
+    "dividend-adjusted Adj Close is not substituted. Yahoo may retrospectively adjust historical bars for splits; this is not "
+    "a raw trade tape or a guaranteed point-in-time price vintage."
+)
+OHLCV_CACHE_VERSION = "close-v2"
+
 # How long a same-day cache that does not yet reach the requested day may be
 # reused before it is refetched (#1150). Short enough that an intraday run picks
 # up today's close soon after it publishes, long enough that a day with no bar
@@ -190,7 +201,7 @@ def load_ohlcv(symbol: str, as_of_date: str, fill_gaps: bool = True) -> pd.DataF
     os.makedirs(config["data_cache_dir"], exist_ok=True)
     data_file = os.path.join(
         config["data_cache_dir"],
-        f"{safe_symbol}-YFin-data.csv",
+        f"{safe_symbol}-YFin-data-{OHLCV_CACHE_VERSION}.csv",
     )
 
     # A cached file may be empty if a prior fetch failed (unknown symbol,
@@ -212,7 +223,7 @@ def load_ohlcv(symbol: str, as_of_date: str, fill_gaps: bool = True) -> pd.DataF
         downloaded = yf_retry(lambda: yf.Ticker(canonical).history(
             start=start_str,
             end=end_str,
-            auto_adjust=True,
+            auto_adjust=False,
             actions=False,
         ))
         if downloaded is None:

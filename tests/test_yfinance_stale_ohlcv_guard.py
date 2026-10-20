@@ -61,6 +61,7 @@ class StaleGuardUnitTests(unittest.TestCase):
 @pytest.mark.unit
 class StaleGuardPropagationTests(unittest.TestCase):
     def test_get_yfin_data_online_raises_on_stale_frame(self):
+        history_options = []
         stale = pd.DataFrame(
             {
                 "Open": [280.0], "High": [286.0], "Low": [278.0],
@@ -73,12 +74,15 @@ class StaleGuardPropagationTests(unittest.TestCase):
             def __init__(self, symbol):
                 pass
 
-            def history(self, start, end):
+            def history(self, start, end, **kwargs):
+                history_options.append(kwargs)
                 return stale
 
         with mock.patch.object(yahoo_market.yf, "Ticker", DummyTicker), \
                 self.assertRaises(NoMarketDataError):
             yahoo_market.get_YFin_data_online("CB", "2026-06-01", "2026-06-11")
+        self.assertEqual(history_options[0]["auto_adjust"], False)
+        self.assertEqual(history_options[0]["actions"], False)
 
 
 @pytest.mark.unit

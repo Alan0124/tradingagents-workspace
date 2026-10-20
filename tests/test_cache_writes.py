@@ -44,12 +44,20 @@ def test_the_price_cache_is_replaced_whole(monkeypatch, tmp_path):
     frame = pd.DataFrame({"Date": pd.bdate_range("2026-01-02", periods=3), "Open": 1.0, "High": 1.0,
                           "Low": 1.0, "Close": 1.0, "Volume": 1})
     monkeypatch.setattr(ohlcv, "get_config", lambda: {"data_cache_dir": str(tmp_path)})
-    monkeypatch.setattr(ohlcv.yf, "Ticker", lambda s: type("T", (), {"history": lambda self, **k: frame.set_index("Date")})())
+    history_kwargs = []
+
+    def history(self, **kwargs):
+        history_kwargs.append(kwargs)
+        return frame.set_index("Date")
+
+    monkeypatch.setattr(ohlcv.yf, "Ticker", lambda s: type("T", (), {"history": history})())
     moves = _recording_replace(monkeypatch)
 
     ohlcv.load_ohlcv("AAPL", "2026-01-06")
 
-    assert [dst.name for _, dst in moves] == ["AAPL-YFin-data.csv"]
+    assert [dst.name for _, dst in moves] == [f"AAPL-YFin-data-{ohlcv.OHLCV_CACHE_VERSION}.csv"]
+    assert history_kwargs[0]["auto_adjust"] is False
+    assert history_kwargs[0]["actions"] is False
     assert moves[0][0].parent == tmp_path and moves[0][0] != moves[0][1]
     assert not list(tmp_path.glob("*.tmp*"))
 

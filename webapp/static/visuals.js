@@ -18,6 +18,12 @@
     { key: "tokens_in", label: "输入 Token", color: "#cbb58c" },
     { key: "tokens_out", label: "输出 Token", color: "#91adbe" },
   ];
+  const QUALITY_STATUS_LABELS = {
+    available: "已获取数据",
+    sparse: "覆盖有限",
+    unavailable: "资料不足",
+    unknown: "未验证",
+  };
 
   function isIsoDate(value) {
     if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value))
@@ -111,6 +117,112 @@
     });
   }
 
+  function hasKnownUsageData(items) {
+    return items.some((item) => item.available);
+  }
+
+  function usageSummary(run) {
+    const stats = run?.stats || {};
+    const validCount = (value) =>
+      typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+    const knownCalls = validCount(stats.usage_known_calls)
+      ? stats.usage_known_calls
+      : null;
+    const totalCalls = validCount(stats.llm_calls) ? stats.llm_calls : null;
+    const hasFlags =
+      typeof stats.usage_reported === "boolean" ||
+      typeof stats.usage_complete === "boolean" ||
+      knownCalls !== null;
+    if (!hasFlags) {
+      const hasValues = buildUsageItems(run).some((item) => item.available);
+      return {
+        state: hasValues ? "unknown" : "unreported",
+        label: hasValues ? "用量状态未验证" : "未报告用量",
+      };
+    }
+    if (stats.usage_reported === false || knownCalls === 0)
+      return { state: "unreported", label: "未报告用量" };
+    if (stats.usage_complete === true)
+      return { state: "complete", label: "完整用量统计" };
+    if (stats.usage_reported === true || (knownCalls !== null && knownCalls > 0)) {
+      const label =
+        knownCalls !== null && totalCalls !== null
+          ? `部分统计 · ${countText(knownCalls)} / ${countText(totalCalls)} 次模型调用报告用量`
+          : knownCalls !== null
+            ? `部分统计 · ${countText(knownCalls)} 次模型调用报告用量 · 总调用数未知`
+            : "部分统计 · 有调用报告用量 · 总调用数未知";
+      return {
+        state: "partial",
+        label,
+      };
+    }
+    return { state: "unreported", label: "未报告用量" };
+  }
+
+  function qualityStatus(value) {
+    return Object.hasOwn(QUALITY_STATUS_LABELS, value) ? value : "unknown";
+  }
+
+  function qualityStatusLabel(value) {
+    return QUALITY_STATUS_LABELS[qualityStatus(value)];
+  }
+
+  function buildQualitySummary(run) {
+    const quality = run?.quality || {};
+    const evidenceCount = quality.evidence_count;
+    return {
+      status: qualityStatus(quality.status),
+      label: qualityStatusLabel(quality.status),
+      summary:
+        typeof quality.summary === "string" && quality.summary.trim()
+          ? quality.summary.trim()
+          : "此研究记录没有经过验证的证据状态。",
+      evidenceCount:
+        typeof evidenceCount === "number" &&
+        Number.isSafeInteger(evidenceCount) &&
+        evidenceCount >= 0
+          ? evidenceCount
+          : null,
+      asOf:
+        typeof quality.as_of === "string" && quality.as_of.trim()
+          ? quality.as_of.trim()
+          : null,
+    };
+  }
+
+  function buildEvidenceItems(run, labels = {}) {
+    const analystReportKeys = (run?.config?.analysts || [])
+      .map((key) => ANALYST_REPORT_KEYS[key])
+      .filter(Boolean);
+    const qualityReports = run?.quality?.reports || {};
+    const reports = run?.reports || {};
+    return [...new Set([...analystReportKeys, ...Object.keys(qualityReports)])]
+      .map((key) => {
+        const details = qualityReports[key] || {};
+        const generated =
+          typeof reports[key] === "string" && reports[key].trim().length > 0;
+        return {
+          key,
+          label: String(labels[key] || key.replaceAll("_", " ")),
+          generation: generated
+            ? "generated"
+            : ["queued", "running", "cancelling"].includes(run?.status)
+              ? "generating"
+              : "missing",
+          status: qualityStatus(details.status),
+          sources: Array.isArray(details.sources)
+            ? details.sources.filter(
+                (source) => source && typeof source === "object",
+              )
+            : [],
+          note:
+            typeof details.note === "string" && details.note.trim()
+              ? details.note.trim()
+              : "",
+        };
+      });
+  }
+
   function escapeHtml(value) {
     return String(value).replace(
       /[&<>"']/g,
@@ -152,8 +264,82 @@
     return numberText(value);
   }
 
+  function priceBasisText(data) {
+    if (data?.price_basis === "yahoo_close_auto_adjust_false")
+      return "收盘价（不额外调整股息；历史可能按拆股调整）";
+    return typeof data?.price_basis === "string" && data.price_basis.trim()
+      ? data.price_basis.trim()
+      : "报价口径未提供";
+  }
+
   function emptyState(message, kind = "") {
     return `<p class="chart-empty-state${kind ? ` ${kind}` : ""}" role="status">${escapeHtml(message)}</p>`;
+  }
+
+  function renderQuality(run, labels) {
+    const panel = document.querySelector("#evidence-quality");
+    if (!panel) return;
+    const summary = buildQualitySummary(run);
+    const status = document.querySelector("#evidence-status");
+    if (status) {
+      status.textContent = summary.label;
+      status.className = `quality-tag quality-${summary.status}`;
+    }
+    const summaryEl = document.querySelector("#evidence-summary");
+    if (summaryEl) summaryEl.textContent = summary.summary;
+    const meta = document.querySelector("#evidence-meta");
+    if (meta) {
+      const details = [];
+      if (summary.evidenceCount !== null)
+        details.push(`${countText(summary.evidenceCount)} 条证据记录`);
+      if (summary.asOf) details.push(`数据日期 ${summary.asOf}`);
+      meta.textContent = details.join(" · ");
+      meta.hidden = details.length === 0;
+    }
+
+    const rows = document.querySelector("#evidence-report-rows");
+    if (!rows) return;
+    const items = buildEvidenceItems(run, labels);
+    rows.innerHTML = items
+      .map((item) => {
+        const generation =
+          item.generation === "generated"
+            ? "已生成"
+            : item.generation === "generating"
+              ? "生成中"
+              : "未生成";
+        const sourceRows = item.sources
+          .map((source) => {
+            const parts = [];
+            if (typeof source.source === "string" && source.source.trim())
+              parts.push(`来源：${escapeHtml(source.source.trim())}`);
+            if (
+              typeof source.sample_count === "number" &&
+              Number.isSafeInteger(source.sample_count) &&
+              source.sample_count >= 0
+            )
+              parts.push(`样本：${countText(source.sample_count)}`);
+            const dates = source.observed_dates || {};
+            if (dates.start || dates.end)
+              parts.push(
+                `覆盖日期：${escapeHtml(dates.start || "未知")} 至 ${escapeHtml(dates.end || "未知")}`,
+              );
+            const coverage =
+              typeof source.coverage_caveat === "string"
+                ? source.coverage_caveat.trim()
+                : "";
+            return `${parts.length ? `<p class="evidence-sources">${parts.join(" · ")}</p>` : ""}${coverage ? `<p>${escapeHtml(coverage)}</p>` : ""}`;
+          })
+          .join("");
+        const note = item.note ? `<p>${escapeHtml(item.note)}</p>` : "";
+        const noSource =
+          !sourceRows && !note
+            ? '<p>未提供逐来源信息。</p>'
+            : "";
+        return `<section class="evidence-report-row"><div class="evidence-report-heading"><b>${escapeHtml(item.label)}</b><span class="generation-state">${generation} · ${qualityStatusLabel(item.status)}</span></div>${sourceRows}${note}${noSource}</section>`;
+      })
+      .join("");
+    rows.hidden = items.length === 0;
   }
 
   function renderCoverage(run, labels) {
@@ -186,8 +372,11 @@
     const el = document.querySelector("#usage-chart");
     if (!el) return;
     const items = buildUsageItems(run);
-    if (!items.some((item) => item.available && item.value > 0)) {
-      el.innerHTML = emptyState("模型尚未返回实际 token 用量数据。");
+    const summary = usageSummary(run);
+    if (!hasKnownUsageData(items)) {
+      el.innerHTML = emptyState(
+        run ? summary.label : "模型尚未返回实际 token 用量数据。",
+      );
       return;
     }
     const knownValues = items
@@ -204,7 +393,10 @@
         return `<g><text x="8" y="${y + 4}">${item.label}</text><rect x="116" y="${y - 8}" width="220" height="12" rx="6" fill="#373635"/><rect x="116" y="${y - 8}" width="${barWidth.toFixed(2)}" height="12" rx="6" fill="${item.color}"/><text x="350" y="${y + 4}">${countText(item.value)}</text></g>`;
       })
       .join("");
-    el.innerHTML = `<svg viewBox="0 0 430 126" role="img" aria-labelledby="usage-title usage-desc" preserveAspectRatio="xMinYMin meet"><title id="usage-title">模型实际 token 用量</title><desc id="usage-desc">${items.map((item) => `${item.label}：${item.available ? countText(item.value) : "暂无数据"}`).join("；")}</desc>${rows}</svg>`;
+    const note = ["partial", "unknown"].includes(summary.state)
+      ? `<p class="usage-note">${escapeHtml(summary.label)}</p>`
+      : "";
+    el.innerHTML = `${note}<svg viewBox="0 0 430 126" role="img" aria-labelledby="usage-title usage-desc" preserveAspectRatio="xMinYMin meet"><title id="usage-title">模型实际 token 用量</title><desc id="usage-desc">${items.map((item) => `${item.label}：${item.available ? countText(item.value) : "暂无数据"}`).join("；")}；${escapeHtml(summary.label)}</desc>${rows}</svg>`;
   }
 
   function renderMarket(data, run) {
@@ -215,8 +407,9 @@
     const asOf = data.as_of || run?.config?.date || "分析日期未知";
     const source = data.source || "Yahoo Finance";
     const currency = data.currency;
+    const priceBasis = priceBasisText(data);
     if (sourceEl) {
-      sourceEl.textContent = `${source} · ${symbol} · 未复权 · 原始报价 · 截至 ${asOf}${currency ? ` · ${currency}` : ""}`;
+      sourceEl.textContent = `${source} · ${symbol} · ${priceBasis} · 截至 ${asOf}${currency ? ` · ${currency}` : ""}`;
     }
     const points = prepareMarketSeries(data.series, asOf);
     if (!points.length) {
@@ -324,6 +517,7 @@
         void runs;
         selectedRun = run && typeof run === "object" ? run : null;
         labels = nextLabels && typeof nextLabels === "object" ? nextLabels : {};
+        renderQuality(selectedRun, labels);
         const nextRunId = selectedRun?.id || null;
         const selectionChanged = nextRunId !== selectedRunId;
         if (selectionChanged) {
@@ -354,7 +548,7 @@
           const sourceEl = document.querySelector("#market-chart-source");
           if (sourceEl)
             sourceEl.textContent =
-              "Yahoo Finance · 日线 · 原始报价 · 缓存最长 15 分钟";
+              "Yahoo Finance · 日线 · 口径加载后显示 · 缓存最长 15 分钟";
         } else {
           setMarketState("开始研究后，可加载截至分析日的历史收盘价。");
           const sourceEl = document.querySelector("#market-chart-source");
@@ -370,9 +564,15 @@
 
   const pure = {
     buildCoverageItems,
+    buildEvidenceItems,
     buildMarketGeometry,
+    buildQualitySummary,
     buildUsageItems,
+    hasKnownUsageData,
+    usageSummary,
+    priceBasisText,
     prepareMarketSeries,
+    qualityStatusLabel,
   };
 
   if (typeof module !== "undefined" && module.exports) module.exports = pure;
