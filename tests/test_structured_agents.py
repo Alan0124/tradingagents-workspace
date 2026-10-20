@@ -529,12 +529,12 @@ def test_a_price_that_is_a_number_survives():
 
 @pytest.mark.unit
 def test_a_field_the_model_did_not_give_says_so():
-    """An omitted line and a line never asked for read the same to an analyst."""
+    """An unsupported price target is omitted from the final decision."""
     from tradingagents.agents.schemas import PortfolioDecision, PortfolioRating, render_pm_decision
 
     rendered = render_pm_decision(PortfolioDecision(
         rating=PortfolioRating.HOLD, executive_summary="s", investment_thesis="t"))
-    assert "Price Target" in rendered and "not provided" in rendered.lower()
+    assert "Price Target" not in rendered
 
 
 @pytest.mark.unit

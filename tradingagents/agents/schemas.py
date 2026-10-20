@@ -18,44 +18,103 @@ so that:
 
 from __future__ import annotations
 
+import math
+import re
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # LLMs sometimes write a placeholder string ("None", "N/A", ...) into an optional
 # numeric field instead of omitting it. Coerce those to None so the structured
 # call validates instead of erroring (#1058). Pydantic still parses real numeric
 # strings ("189.5") to float.
 _NULLISH_FLOAT = {"", "none", "n/a", "na", "null", "nil", "-", "tbd", "unknown"}
+_CURRENCY_FORMS = {
+    "USD": r"(?:USD|US\s*\$|\$|＄)",
+    "HKD": r"(?:HKD|HK\s*\$|HK\s*[¥￥]|港元|港币|港幣)",
+    "CNY": (
+        r"(?:CNY|CNH|RMB(?:\s*[¥￥])?|人民币(?:\s*[¥￥])?|人民幣(?:\s*[¥￥])?|"
+        r"CN\s*[¥￥]|[¥￥]|元|圆|圓)"
+    ),
+    "EUR": r"(?:EUR|€)",
+    "GBP": r"(?:GBP|£)",
+}
+_CURRENCY_TOKEN = "(?:" + "|".join(_CURRENCY_FORMS.values()) + ")"
+_PRICE_LABEL_RE = re.compile(
+    r"^(?:the\s+)?(?:price\s+target|target\s+price|"
+    r"目标价格|目标价|目標價格|目標價)"
+    r"\s*(?:(?:is|of|为|是|[:：=])\s*)?",
+    re.IGNORECASE,
+)
+_SINGLE_PRICE_RE = re.compile(
+    r"^\s*(?P<per_share_prefix>per\s+share|每股)?\s*"
+    rf"(?P<prefix>{_CURRENCY_TOKEN})?\s*"
+    r"(?P<number>[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*"
+    rf"(?P<suffix>{_CURRENCY_TOKEN})?\s*"
+    r"(?P<per_share>per\s+share|/\s*share|每股|/\s*股)?\s*$",
+    re.IGNORECASE,
+)
 
 
 def _coerce_optional_float(value):
     """Normalise an LLM-written optional numeric field before validation.
 
-    Three shapes show up in practice: a placeholder string ("None", "N/A") in
-    place of an omitted value (#1058); a percentage where a price was asked for
-    ("15%", #1288); and a human-formatted price ("$1,234.50"). A percentage
-    cannot be salvaged into an absolute level -- reading "15%" as 15 would put a
-    stop at $15 on a $600 stock -- so it is dropped like a placeholder, leaving
-    one bad field to null out instead of failing the whole proposal. A formatted
-    price is reduced to its number.
-
-    Anything that is not a single number is dropped the same way. A range
-    ("150-160") or a hedge ("around 150") would otherwise reach pydantic, fail
-    validation, and discard the whole decision, losing every field the model got
-    right along with the price.
+    Placeholder strings, percentages, ranges, hedged values, and prose are
+    dropped as missing. Currency symbols and names (including common Chinese
+    RMB/HKD forms) may surround one number. Only a single number with no other
+    substantive text is accepted, so a range or a sentence with several prices
+    cannot be guessed into a value.
     """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return value if math.isfinite(float(value)) else None
+        except OverflowError:
+            return None
     if not isinstance(value, str):
         return value
     text = value.strip()
-    if text.lower() in _NULLISH_FLOAT or text.endswith("%"):
+    if text.lower() in _NULLISH_FLOAT or "%" in text or "％" in text:
         return None
-    cleaned = text.replace(",", "").lstrip("$€£¥").strip()
+    # A field label is acceptable framing, but estimates and arbitrary prose
+    # are not. In particular, "around 150" and "target is 150 or 160" remain
+    # ambiguous and are intentionally rejected.
+    text = _PRICE_LABEL_RE.sub("", text).replace("，", ",")
+    if text.endswith((".", ";", ",", "。")):
+        text = text[:-1].rstrip()
+    match = _SINGLE_PRICE_RE.fullmatch(text)
+    if match is None:
+        return None
+    prefix, suffix = match.group("prefix"), match.group("suffix")
+    if prefix and suffix and _currency_code(prefix) != _currency_code(suffix):
+        return None
     try:
-        return float(cleaned)
+        return float(match.group("number").replace(",", ""))
     except ValueError:
         return None
+
+
+def _currency_code(value: str) -> str | None:
+    """Map a parsed currency form to its family for consistency checks."""
+    for code, pattern in _CURRENCY_FORMS.items():
+        if re.fullmatch(pattern, value, re.IGNORECASE):
+            return code
+    return None
+
+
+def _coerce_optional_score(value):
+    """Accept a plain finite numeric score or a nullish placeholder only."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str) and value.strip().lower() in _NULLISH_FLOAT:
+        return None
+    try:
+        score = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return score if math.isfinite(score) else None
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +311,13 @@ class PortfolioDecision(BaseModel):
     )
     price_target: float | None = Field(
         default=None,
-        description="Optional target price in the instrument's quote currency.",
+        description=(
+            "Optional explicit target price as one absolute number in the instrument's "
+            "quote currency. Return null when the analysis does not support one clear "
+            "single target. Do not estimate one just to fill this field, infer it from "
+            "the current or web quoted price, or reuse an entry price or stop-loss. "
+            "A range or an approximate/ambiguous statement is not a single target."
+        ),
     )
     time_horizon: str | None = Field(
         default=None,
@@ -280,10 +345,8 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
         "",
         f"**Investment Thesis**: {decision.investment_thesis}",
     ]
-    # Named even when absent: a missing line reads as a field nobody asked for,
-    # so a reader cannot tell "no target" from "target not reported".
-    target = decision.price_target if decision.price_target is not None else "not provided"
-    parts.extend(["", f"**Price Target**: {target}"])
+    if decision.price_target is not None:
+        parts.extend(["", f"**Price Target**: {decision.price_target}"])
     parts.extend(["", f"**Time Horizon**: {decision.time_horizon or 'not provided'}"])
     return "\n".join(parts)
 
@@ -296,8 +359,8 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
 class SentimentBand(StrEnum):
     """Discrete sentiment direction produced by the Sentiment Analyst.
 
-    Six tiers keep the signal granular enough to be actionable while remaining
-    small enough for every provider to map reliably from its JSON output.
+    Six direction tiers capture sentiment; Insufficient Data records when the
+    available sources do not support an assessment.
     """
 
     BULLISH = "Bullish"
@@ -306,6 +369,7 @@ class SentimentBand(StrEnum):
     MIXED = "Mixed"
     MILDLY_BEARISH = "Mildly Bearish"
     BEARISH = "Bearish"
+    INSUFFICIENT_DATA = "Insufficient Data"
 
 
 class SentimentReport(BaseModel):
@@ -316,18 +380,23 @@ class SentimentReport(BaseModel):
     ``overall_band`` and ``overall_score`` without maintaining fragile regex
     fallbacks that drift with every model release. ``narrative`` preserves the
     rich source-by-source analysis; ``render_sentiment_report`` prepends a
-    deterministic header so the saved report stays human-readable.
+    deterministic header so the saved report stays human-readable. When the
+    evidence is insufficient, the score is null and the header says so.
     """
 
     overall_band: SentimentBand = Field(
         description=(
             "Overall sentiment direction. Exactly one of: "
-            "Bullish / Mildly Bullish / Neutral / Mixed / Mildly Bearish / Bearish. "
+            "Bullish / Mildly Bullish / Neutral / Mixed / Mildly Bearish / Bearish / "
+            "Insufficient Data. "
             "Use Mixed when sources point in clearly different directions. "
-            "Use Neutral only when all sources are genuinely silent or non-committal."
+            "Use Neutral for genuinely non-committal evidence. Use Insufficient Data "
+            "when sources are missing, placeholders, or too sparse to assess; missing "
+            "data is not Neutral."
         ),
     )
-    overall_score: float = Field(
+    overall_score: float | None = Field(
+        default=None,
         ge=0.0,
         le=10.0,
         description=(
@@ -336,44 +405,59 @@ class SentimentReport(BaseModel):
             "Guideline for consistency with overall_band: "
             "Bullish ~6.5–10, Mildly Bullish ~5.5–6.4, Neutral/Mixed ~4.5–5.5, "
             "Mildly Bearish ~3.5–4.4, Bearish ~0–3.4. "
-            "Only the 0–10 bounds are enforced."
+            "Only the 0–10 bounds are enforced. Return null and choose "
+            "Insufficient Data when there is not enough usable evidence to assess "
+            "sentiment; do not assign a neutral score to missing data."
         ),
     )
+
     confidence: Literal["low", "medium", "high"] = Field(
         description=(
-            "Confidence in the assessment based on data quality and sample size. "
-            "Use 'low' when one or more sources returned a placeholder or fewer "
-            "than 5 data points; 'medium' when data is present but sparse; "
-            "'high' when all three sources returned substantive data."
+            "Confidence based on the quality, amount, and independence of the "
+            "sources actually available. Use 'low' when evidence is missing, "
+            "placeholder-only, or too sparse; 'medium' when usable evidence is "
+            "limited; use 'high' only when the available evidence is substantive "
+            "and sufficiently broad. Do not assume every possible source was run."
         ),
     )
     narrative: str = Field(
         description=(
-            "Full sentiment report covering, in order: "
-            "(1) source-by-source breakdown with specific evidence (cite message "
-            "counts, ratios, notable posts); "
-            "(2) cross-source divergences and alignments; "
-            "(3) dominant narrative themes; "
-            "(4) catalysts and risks surfaced by the data; "
-            "(5) a markdown table summarising key sentiment signals, their "
-            "direction, source, and supporting evidence. "
-            "Keep it informative and substantive: develop each section thoroughly "
-            "with concrete evidence so every point adds new signal for the trader."
+            "Concise, evidence-based sentiment analysis using the sources actually "
+            "available. Describe useful alignments, divergences, themes, catalysts, "
+            "risks, or a signal table only when supported by evidence. When data is "
+            "missing or too sparse, state that plainly and keep the report brief; "
+            "do not invent sentiment, themes, or sample counts."
         ),
     )
+
+    @field_validator("overall_score", mode="before")
+    @classmethod
+    def _nullish_score_to_none(cls, value):
+        return _coerce_optional_score(value)
+
+    @model_validator(mode="after")
+    def _normalise_insufficient_data(self):
+        if self.overall_band is SentimentBand.INSUFFICIENT_DATA or self.overall_score is None:
+            self.overall_band = SentimentBand.INSUFFICIENT_DATA
+            self.overall_score = None
+            self.confidence = "low"
+        return self
 
 
 def render_sentiment_report(report: SentimentReport) -> str:
     """Render a SentimentReport to the markdown shape the rest of the system expects.
 
-    The structured header (band + score + confidence) is prepended to the
-    narrative so the saved report is both human-readable and machine-parseable
-    without regex.
+    The structured header (band, score when available, and confidence) is
+    prepended to the narrative so the saved report is both human-readable and
+    machine-parseable without regex.
     """
-    return "\n".join([
-        f"**Overall Sentiment:** **{report.overall_band.value}** "
-        f"(Score: {report.overall_score:.1f}/10)",
-        f"**Confidence:** {report.confidence.capitalize()}",
-        "",
-        report.narrative,
-    ])
+    if report.overall_band is SentimentBand.INSUFFICIENT_DATA or report.overall_score is None:
+        headline = "**Overall Sentiment:** **Insufficient Data**"
+        confidence = "Low"
+    else:
+        headline = (
+            f"**Overall Sentiment:** **{report.overall_band.value}** "
+            f"(Score: {report.overall_score:.1f}/10)"
+        )
+        confidence = report.confidence.capitalize()
+    return "\n".join([headline, f"**Confidence:** {confidence}", "", report.narrative])

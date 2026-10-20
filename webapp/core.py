@@ -581,7 +581,16 @@ def document(run):
     )
     for key, label in LABELS.items():
         if run["reports"].get(key):
-            text += f"## {label}\n\n{run['reports'][key]}\n\n"
+            text += f"## {label}\n\n{display_report(key, run['reports'][key])}\n\n"
+    return text
+
+
+def display_report(key, text):
+    """Hide legacy optional placeholders on output, retaining the stored original."""
+    if key == "final_trade_decision":
+        from tradingagents.agents.managers.portfolio_manager import omit_unavailable_price_target
+
+        return omit_unavailable_price_target(text)
     return text
 
 

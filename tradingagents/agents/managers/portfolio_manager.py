@@ -10,6 +10,8 @@ free-text generation and the rating is read from that text.
 
 from __future__ import annotations
 
+import re
+
 from tradingagents.agents.context import (
     get_instrument_context_from_state,
     get_language_instruction,
@@ -18,6 +20,27 @@ from tradingagents.agents.context import (
 from tradingagents.agents.rating import parse_rating
 from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
 from tradingagents.agents.structured import NO_EXTERNAL_TOOLS, bind_structured, invoke_structured
+
+_MISSING_PRICE_TARGET_LINE = re.compile(
+    r"^\s*(?:[-*•]\s*)?(?:\*\*|__)?\s*Price\s+Target\s*(?:\*\*|__)?\s*:"
+    r"\s*(?:not\s+provided|not\s+available|not\s+applicable|"
+    r"n\s*(?:/|\.)?\s*a\.?|none|null|unknown|unavailable|tbd|no\s+data|"
+    r"未提供|暂无|暫無|缺失|不适用|不適用|未知|未披露|"
+    r"没有|沒有)\s*[.!。]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def omit_unavailable_price_target(text: str) -> str:
+    """Remove standalone Price Target lines whose value says it is unavailable.
+
+    The strict whole-line match keeps thesis prose that mentions an unavailable
+    target, and preserves real numeric targets in free-text reports.
+    """
+    return "".join(
+        line for line in text.splitlines(keepends=True)
+        if not _MISSING_PRICE_TARGET_LINE.fullmatch(line.rstrip("\r\n"))
+    )
 
 
 def create_portfolio_manager(llm):
@@ -65,6 +88,8 @@ def create_portfolio_manager(llm):
 
 Ground every conclusion in specific evidence from the analysts. The risk debate always contains conflicting stances; deciding which is stronger is the job, so conflict alone is not a reason to Hold. Commit to the stronger case, sized by how decisively it wins. Choose Hold only when the evidence is still balanced after that weighing, or too thin to support a call; do not force a direction to appear decisive. Weigh the analysts on their merits, independent of speaking order.
 
+Give a Price Target only when the analysis supports one clear, explicit target price. If it does not, return null; do not invent a valuation to fill the field. Do not treat the current or web quoted price, an entry price, or a stop-loss as the target. A range or approximate wording is not a single target.
+
 ## Output
 
 Write these sections, in this order, starting with the rating on its own line:
@@ -79,10 +104,10 @@ Write these sections, in this order, starting with the rating on its own line:
         # Read back from text, a rating the thesis quotes could replace it.
         decision = invoke_structured(structured_llm, prompt, "Portfolio Manager")
         if decision is not None:
-            final_trade_decision = render_pm_decision(decision)
+            final_trade_decision = omit_unavailable_price_target(render_pm_decision(decision))
             final_rating = decision.rating.value
         else:
-            final_trade_decision = llm.invoke(prompt).content
+            final_trade_decision = omit_unavailable_price_target(llm.invoke(prompt).content)
             final_rating = parse_rating(final_trade_decision)
 
         new_risk_debate_state = {

@@ -59,6 +59,11 @@ def execute(request, graph_class=None, stats_class=None):
         checkpoint_enabled=False,
         llm_max_retries=2,
     )
+    from tradingagents.dataflows.vendors.eastmoney import is_china_equity
+
+    if is_china_equity(chosen["ticker"]):
+        # Use local-market news for A shares; preserve explicit tool overrides.
+        config.setdefault("tool_vendors", {}).setdefault("get_news", "eastmoney")
     stats = stats_class()
     emit("stage", text="正在连接模型与数据源")
     graph = graph_class(selected_analysts=chosen["analysts"], config=config, callbacks=[stats])

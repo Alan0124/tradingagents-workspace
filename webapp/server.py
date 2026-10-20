@@ -26,6 +26,7 @@ from webapp.core import (
     InstanceLock,
     Manager,
     Store,
+    display_report,
     document,
     metadata,
     redact,
@@ -171,7 +172,12 @@ class Handler(BaseHTTPRequestHandler):
             run = self.server.manager.store.get(parts[2])
             if len(parts) == 3:
                 return self.send(
-                    {**run, "rendered": {k: MD.render(v) for k, v in run["reports"].items()}}
+                    {
+                        **run,
+                        "rendered": {
+                            k: MD.render(display_report(k, v)) for k, v in run["reports"].items()
+                        },
+                    }
                 )
             ext = parts[3]
             if ext == "market":
