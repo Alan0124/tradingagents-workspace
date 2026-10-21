@@ -94,9 +94,9 @@ class EngineIntegrationTests(unittest.TestCase):
             self.assertEqual(quality["status"], "unknown")
             saved_reports = list(Path(tmp).glob("reports/*/complete_report.html"))
             self.assertTrue(saved_reports)
-            self.assertIn("REVIEW", saved_reports[0].read_text())
+            self.assertIn("REVIEW", saved_reports[0].read_text(encoding="utf-8"))
             self.assertTrue(list(Path(tmp).glob("AAPL/TradingAgentsStrategy_logs/*.json")))
-            self.assertIn("REVIEW", (Path(tmp) / "memory.md").read_text())
+            self.assertIn("REVIEW", (Path(tmp) / "memory.md").read_text(encoding="utf-8"))
 
     def test_worker_resumes_from_same_run_checkpoint_and_clears_on_success(self):
         inputs = []
@@ -359,7 +359,7 @@ class EngineIntegrationTests(unittest.TestCase):
                 )
 
             self.assertEqual(calls, {"research": 1, "decision": 2})
-            evidence = json.loads((Path(tmp) / "evidence.json").read_text())
+            evidence = json.loads((Path(tmp) / "evidence.json").read_text(encoding="utf-8"))
             self.assertEqual(len(evidence["evidence"]), 1)
             self.assertEqual(evidence["evidence"][0]["payload"], {"sample": "same run, no network"})
             events = [
