@@ -9,6 +9,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from webapp import __version__
+
 
 def launcher_script(workspace: Path, executable: str, log_directory: Path) -> str:
     """Detach the server, including its inherited descriptors, from AppleScript."""
@@ -53,7 +55,7 @@ def main():
             CFBundleName="TradingAgents 投研台",
             CFBundleDisplayName="TradingAgents 投研台",
             CFBundleIdentifier="local.tradingagents.workspace",
-            CFBundleShortVersionString="2.1.0",
+            CFBundleShortVersionString=__version__,
         )
         info_path.write_bytes(plistlib.dumps(info))
         subprocess.run(["xattr", "-cr", str(app)], check=True)

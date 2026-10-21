@@ -48,7 +48,7 @@
 | 可视化 | 加载截至分析日的价格轨迹，查看报告覆盖与实际 Token 分配 |
 | 观察进程 | 查看分析、辩论、交易方案、风控和决策各阶段，以及工具调用记录 |
 | 阅读报告 | 技术面、基本面、新闻、情绪、多空观点和风险意见按章节展示 |
-| 管理任务 | 后台运行、主动停止；刷新页面可恢复当前研究视图 |
+| 管理任务 | 后台运行、主动停止；刷新页面恢复视图，中断后从可用检查点继续 |
 | 研究归档 | 自动保存历史，按代码或服务商搜索，复用配置重新研究 |
 | 导出成果 | 下载 HTML 或 Markdown，HTML 可通过浏览器打印为 PDF |
 | 本地运行 | 界面无外部字体或前端 CDN 依赖，密钥不存入浏览器存储 |
@@ -69,14 +69,16 @@ flowchart LR
 
 需要 **Python 3.11 或更高版本**。推荐使用 Python 3.13。
 
+先运行 `python3.13 --version`（Windows 为 `py -3.13 --version`）确认已安装。macOS 自带的 `python3` 可能低于 3.11；若使用其他受支持版本，请将下面的解释器名称替换为实际版本。
+
 ### macOS / Linux
 
 ```sh
 git clone https://github.com/Alan0124/tradingagents-workspace.git
 cd tradingagents-workspace
-python3 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+python -m pip install -e .
 tradingagents-web --open
 ```
 
@@ -87,7 +89,7 @@ git clone https://github.com/Alan0124/tradingagents-workspace.git
 cd tradingagents-workspace
 py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e .
+python -m pip install -e .
 tradingagents-web --open
 ```
 
@@ -102,6 +104,8 @@ python -m webapp.install_desktop
 ```
 
 之后双击桌面的 **TradingAgents 投研台.app** 即可打开。启动器绑定当前目录；移动项目或虚拟环境后请重新生成。
+
+源码目录内也可双击 **启动 TradingAgents.command**，`webapp/launch.command` 共用同一入口，均打开浏览器工作台。`.command` 在终端前台运行服务，关闭终端会结束服务；桌面 `.app` 在后台运行，日志位于 `.local/web/server.log`。原命令行分析请在虚拟环境中运行 `tradingagents`。
 
 ### 第一份研究
 
@@ -124,13 +128,16 @@ python -m webapp.install_desktop
 
 行情、财报、新闻与社交数据沿用原项目的数据工具。不同市场的数据覆盖并不相同；A 股、港股或加密资产的代码可被识别，不代表所有研究维度的数据都完整。
 
+新工作台研究没有可核验的有效证据时（包括未调用任何数据工具、零采集记录），最终决策为 `REVIEW`，不生成方向性评级或目标价。旧报告仍保留原始评级及“未验证”状态。
+
 ## 本地数据与隐私
 
 | 内容 | 源码安装时的默认位置 |
 | --- | --- |
 | 模型密钥 | 项目根目录 `.env` |
 | 界面偏好、历史任务与报告 | `.local/web/` |
-| 原引擎缓存与记忆 | `~/.tradingagents/` 或原配置指定路径 |
+| 每次研究的证据、缓存与检查点 | `.local/web/runs/<任务 ID>/` |
+| 原引擎记忆 | `~/.tradingagents/` 或原配置指定路径 |
 | 桌面启动日志 | `.local/web/server.log` |
 
 `.env`、`.local/`、缓存和生成报告均不应提交到 Git。服务仅监听本机回环地址；写入接口校验来源与会话令牌，报告渲染禁用原始 HTML。
@@ -175,7 +182,8 @@ cli/                    # 保留原版命令行入口
 ## 边界与已知限制
 
 - 当前一次运行一个研究任务；服务重启后，未完成任务会标记为中断，已收到的报告保留。
-- 界面当前不提供跨进程断点续跑、完整投资组合回测或实盘下单。
+- 中断、失败或停止的研究可点击「继续研究」，按原配置从该任务的可用检查点恢复；没有检查点的旧任务需重新研究。已在途的模型请求可能需要重试并产生费用。
+- 界面当前不提供完整投资组合回测或实盘下单；CLI 的 `tradingagents backtest` 评估历史评级，不模拟滚动持仓与成交。
 - Token 数量取决于服务商是否返回使用量；不能据此推算统一成本。
 - LLM 输出存在波动，数据源可能缺失、限流或不可用；历史日期分析也不能消除模型训练知识带来的偏差。
 

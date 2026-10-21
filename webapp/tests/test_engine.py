@@ -87,10 +87,16 @@ class EngineIntegrationTests(unittest.TestCase):
             self.assertIn("fundamentals_report", reports)
             self.assertIn("bull", reports)
             self.assertIn("conservative", reports)
-            self.assertEqual(next(e["rating"] for e in events if e["type"] == "result"), "Hold")
-            self.assertTrue(list(Path(tmp).glob("reports/*/complete_report.html")))
+            self.assertEqual(next(e["rating"] for e in events if e["type"] == "result"), "REVIEW")
+            self.assertNotIn("Price Target", reports["final_trade_decision"])
+            quality = [e["quality"] for e in events if e["type"] == "quality"][-1]
+            self.assertEqual(quality["evidence_count"], 0)
+            self.assertEqual(quality["status"], "unknown")
+            saved_reports = list(Path(tmp).glob("reports/*/complete_report.html"))
+            self.assertTrue(saved_reports)
+            self.assertIn("REVIEW", saved_reports[0].read_text())
             self.assertTrue(list(Path(tmp).glob("AAPL/TradingAgentsStrategy_logs/*.json")))
-            self.assertTrue((Path(tmp) / "memory.md").exists())
+            self.assertIn("REVIEW", (Path(tmp) / "memory.md").read_text())
 
     def test_worker_resumes_from_same_run_checkpoint_and_clears_on_success(self):
         inputs = []

@@ -3,6 +3,7 @@ import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
+from types import SimpleNamespace
 
 import pytest
 
@@ -80,7 +81,15 @@ def test_failed_request_is_receipted_and_can_retry(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
-def test_no_evidence_cannot_be_promoted_to_a_directional_final_rating(tmp_path):
+@pytest.mark.parametrize("receipts", [
+    [],
+    [("fundamentals_report", "unavailable")],
+    [("fundamentals_report", "unavailable"), ("news_report", "unavailable")],
+    [("fundamentals_report", "unknown")],
+    [("fundamentals_report", "unavailable"), ("news_report", "unknown")],
+    [("market_report", "available")],  # unrelated to the selected dimensions
+])
+def test_no_evidence_cannot_be_promoted_to_a_directional_final_rating(tmp_path, receipts):
     from tradingagents.agents.managers.portfolio_manager import create_portfolio_manager
 
     class Model:
@@ -90,12 +99,44 @@ def test_no_evidence_cannot_be_promoted_to_a_directional_final_rating(tmp_path):
         def invoke(self, *args):
             pytest.fail("missing evidence should not spend another model call on a rating")
 
-    ledger = EvidenceLedger(tmp_path, "2026-10-21", ["fundamentals"])
+    ledger = EvidenceLedger(tmp_path, "2026-10-21", ["fundamentals", "news"])
     with ledger.activate():
-        record_source("fundamentals_report", "eastmoney", "withheld", status="unavailable")
+        for report, status in receipts:
+            record_source(report, "fixture", "offline receipt", status=status)
         result = create_portfolio_manager(Model())({})
     assert result["final_rating"] == "REVIEW"
     assert "Price Target" not in result["final_trade_decision"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("status", ["available", "sparse"])
+@pytest.mark.parametrize("analysts", [["fundamentals"], ["fundamentals", "news"]])
+def test_usable_evidence_still_allows_a_model_rating(tmp_path, status, analysts):
+    from tradingagents.agents.managers.portfolio_manager import create_portfolio_manager
+
+    class Model:
+        def with_structured_output(self, *args):
+            raise NotImplementedError
+
+        def invoke(self, *args):
+            return SimpleNamespace(content="**Rating**: Buy\nOffline decision.")
+
+    state = {
+        "company_of_interest": "AAPL",
+        "investment_plan": "offline research",
+        "trader_investment_plan": "offline proposal",
+        "risk_debate_state": {
+            **dict.fromkeys(("history", "aggressive_history", "conservative_history",
+                            "neutral_history", "current_aggressive_response",
+                            "current_conservative_response", "current_neutral_response"), ""),
+            "count": 1,
+        },
+    }
+    # A covered dimension may support a rating even when another is unverified.
+    with EvidenceLedger(tmp_path, "2026-10-21", analysts).activate():
+        record_source("fundamentals_report", "fixture", "offline data", status=status)
+        result = create_portfolio_manager(Model())(state)
+    assert result["final_rating"] == "Buy"
 
 
 @pytest.mark.unit

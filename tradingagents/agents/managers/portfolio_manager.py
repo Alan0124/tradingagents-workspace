@@ -50,17 +50,18 @@ def create_portfolio_manager(llm):
 
     def portfolio_manager_node(state) -> dict:
         ledger = current_ledger()
-        if ledger is not None and ledger.quality()["status"] == "unavailable":
+        # An empty ledger is unknown, not unavailable. Neither can support a rating.
+        if ledger is not None and ledger.quality()["status"] not in {"available", "sparse"}:
             chinese = "chinese" in get_config().get("output_language", "English").lower()
             report = (
                 "**Rating**: REVIEW\n\n资料不足，暂不评级。\n\n"
-                "所选分析维度均未获得可用数据，不能据此给出买卖方向、情绪分数或目标价。"
-                "请先补充数据来源，再重新评估。已保留获取结果与缺失原因供核对。"
+                "所选分析维度没有可核验的有效数据，不能据此给出买卖方向、情绪分数或目标价。"
+                "请先补充数据来源，再重新评估。已保留分析报告及可用的采集记录供核对。"
                 if chinese else
                 "**Rating**: REVIEW\n\nInsufficient Data — no directional rating.\n\n"
-                "None of the selected dimensions returned usable evidence. Do not infer a trade, "
-                "sentiment score or price target from missing data. Acquisition receipts and "
-                "coverage gaps are retained for review."
+                "None of the selected dimensions has verifiable usable evidence. Do not infer a trade, "
+                "sentiment score or price target from missing data. Analyst reports and any "
+                "available acquisition receipts are retained for review."
             )
             return {"final_trade_decision": report, "final_rating": "REVIEW"}
         instrument_context = get_instrument_context_from_state(state)
