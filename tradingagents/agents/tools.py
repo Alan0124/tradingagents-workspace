@@ -93,7 +93,7 @@ def get_verified_market_snapshot(
         provider = configured_provider(symbol)
         served_date = as_of(curr_date, trade_date)
         result = build_verified_market_snapshot(symbol, served_date, look_back_days)
-        return capture_result("get_verified_market_snapshot", provider, (symbol, served_date, look_back_days), {}, result)
+        return capture_result("get_verified_market_snapshot", getattr(result, "provider", provider), (symbol, served_date, look_back_days), {}, result)
     except VendorUnavailableError as exc:
         return capture_result("get_verified_market_snapshot", provider, (symbol, curr_date), {},
                               vendor_unavailable("get_verified_market_snapshot", exc))

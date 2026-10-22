@@ -105,12 +105,18 @@ VENDOR_METHODS = {
         "alpha_vantage": get_alpha_vantage_stock,
         "yfinance": get_YFin_data_online,
         "eastmoney": partial(get_YFin_data_online, provider="eastmoney"),
+        "auto": partial(get_YFin_data_online, provider="auto"),
+        "tencent": partial(get_YFin_data_online, provider="tencent"),
+        "sina": partial(get_YFin_data_online, provider="sina"),
     },
     # technical_indicators
     "get_indicators": {
         "alpha_vantage": get_alpha_vantage_indicator,
         "yfinance": get_stock_stats_indicators_window,
         "eastmoney": partial(get_stock_stats_indicators_window, provider="eastmoney"),
+        "auto": partial(get_stock_stats_indicators_window, provider="auto"),
+        "tencent": partial(get_stock_stats_indicators_window, provider="tencent"),
+        "sina": partial(get_stock_stats_indicators_window, provider="sina"),
     },
     # fundamental_data
     "get_fundamentals": {
@@ -272,7 +278,7 @@ def _route_to_vendor(method: str, *args, **kwargs):
 
         try:
             result = impl_func(*args, **kwargs)
-            return capture_result(method, vendor, args, kwargs, result, vendor_chain=vendor_config)
+            return capture_result(method, getattr(result, "provider", vendor), args, kwargs, result, vendor_chain=vendor_config)
         except VendorUnavailableError as e:
             logger.warning("Vendor %r unavailable for %s: %s; trying next vendor.", vendor, method, e)
             # Kept so an all-unavailable chain can say the vendor was the

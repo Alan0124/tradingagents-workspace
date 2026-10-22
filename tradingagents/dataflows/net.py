@@ -1,6 +1,27 @@
 """HTTP helpers shared by the vendors."""
 
+import json
+
 import requests
+
+from tradingagents.dataflows.errors import VendorUnavailableError
+
+
+def get_json_bounded(url: str, *, params: dict, source: str):
+    """Read public market JSON with bounded time/size and credential-free errors."""
+    try:
+        with requests.get(url, params=params, timeout=(4, 10), stream=True,
+                          headers={"User-Agent": "Mozilla/5.0"}) as response:
+            response.raise_for_status()
+            chunks, size = [], 0
+            for chunk in response.iter_content(64_000):
+                size += len(chunk)
+                if size > 2_000_000:
+                    raise VendorUnavailableError(f"{source} response exceeded size limit")
+                chunks.append(chunk)
+        return json.loads(b"".join(chunks))
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        raise VendorUnavailableError(f"{source} daily prices temporarily unavailable") from exc
 
 
 def get_scrubbed(url: str, *, params: dict, timeout: float, secret: str, passthrough=()):

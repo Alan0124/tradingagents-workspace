@@ -128,7 +128,7 @@ def test_shared_normalization_cutoff_duplicates_missing_and_stale(monkeypatch, t
                         "Open": [9, None, 10, 999, 9], "Volume": [100, None, 200, 999, 1]})
     fetch = Mock(return_value=raw)
     monkeypatch.setattr(eastmoney_market, "fetch_daily", fetch)
-    with run_config({"data_cache_dir": str(tmp_path)}):
+    with run_config({"data_cache_dir": str(tmp_path), "data_vendors": {"core_stock_apis": "eastmoney", "technical_indicators": "eastmoney"}}):
         result = market_data.load_ohlcv("600519", DAY)
         assert result["Close"].tolist() == [10, 12]
         assert pd.isna(result["Open"].iloc[0]) and pd.isna(result["Volume"].iloc[0])
@@ -145,7 +145,7 @@ def test_shared_normalization_cutoff_duplicates_missing_and_stale(monkeypatch, t
 def test_explicit_source_and_mismatched_sources(monkeypatch, tmp_path):
     assert market_data.resolve_provider("600519", "yfinance") == "yfinance"
     assert market_data.resolve_provider("AAPL") == "yfinance"
-    assert market_data.resolve_provider("600519") == "eastmoney"
+    assert market_data.resolve_provider("600519") == "auto"
     for config in ({"data_vendors": {"core_stock_apis": "default", "technical_indicators": "default"}},
                    {"data_vendors": {"core_stock_apis": "alpha_vantage"}},
                    {"tool_vendors": {"get_stock_data": "yfinance"}}):

@@ -16,7 +16,7 @@ import pandas as pd
 from stockstats import wrap
 
 from tradingagents.dataflows.errors import NoMarketDataError
-from tradingagents.dataflows.market_data import load_ohlcv
+from tradingagents.dataflows.market_data import MarketDataText, load_ohlcv
 from tradingagents.dataflows.symbols import normalize_symbol
 from tradingagents.dataflows.vendors.yahoo.ohlcv import (
     PRICE_BASIS,
@@ -103,6 +103,7 @@ def build_verified_market_snapshot(
         f"- Currency: {info.get('currency', 'vendor quote currency')}; volume unit: {info.get('volume_unit', 'vendor native volume')}",
         f"- Price basis: {info.get('price_basis', PRICE_BASIS)}",
         f"- Price caveat: {info.get('price_basis_note', PRICE_BASIS_CAVEAT)}",
+        f"- Data SHA-256: {info.get('data_sha256', 'not recorded')}",
         f"- Latest trading row used: {latest_date}",
         "- Rows after the requested analysis date are excluded before verification.",
         "",
@@ -133,4 +134,4 @@ def build_verified_market_snapshot(
         "percentage moves unless directly supported by tool output with concrete "
         "dates and prices.",
     ]
-    return "\n".join(lines)
+    return MarketDataText("\n".join(lines), info)

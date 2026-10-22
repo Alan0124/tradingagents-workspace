@@ -196,7 +196,8 @@ test("market geometry handles flat and single-point histories with finite coordi
 });
 
 test("market source text uses the returned price basis and labels missing metadata", () => {
-  assert.equal(priceBasisText({ price_basis: "eastmoney_unadjusted_daily" }), "日线不复权（CNY；成交量为股；除权除息影响指标）");
+  for (const provider of ["eastmoney", "tencent", "sina"])
+    assert.equal(priceBasisText({ price_basis: `${provider}_unadjusted_daily` }), "日线不复权（CNY；成交量为股；除权除息影响指标）");
   assert.equal(priceBasisText({ price_basis: "yahoo_close_auto_adjust_false" }), "收盘价（不额外调整股息；历史可能按拆股调整）");
   assert.equal(priceBasisText({ price_basis: "split-adjusted close" }), "split-adjusted close");
   assert.equal(priceBasisText({}), "报价口径未提供");

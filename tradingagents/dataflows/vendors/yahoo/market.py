@@ -8,7 +8,7 @@ from dateutil.relativedelta import relativedelta
 from stockstats import wrap
 
 from tradingagents.dataflows.errors import NoMarketDataError, VendorError
-from tradingagents.dataflows.market_data import describe, load_ohlcv
+from tradingagents.dataflows.market_data import MarketDataText, describe, load_ohlcv
 from tradingagents.dataflows.symbols import normalize_symbol
 from tradingagents.dataflows.vendors.yahoo.common import yf_retry
 
@@ -35,9 +35,9 @@ def get_YFin_data_online(
     label = canonical if canonical == symbol.upper() else f"{canonical} (from {symbol})"
     header = f"# Stock data for {label} from {start_date} to {end_date}\n"
     header += f"# Total records: {len(data)}\n\n"
-    header += "\n".join(f"# {line}" for line in describe(symbol, provider).splitlines()) + "\n\n"
+    header += "\n".join(f"# {line}" for line in describe(symbol, provider, data.attrs).splitlines()) + "\n\n"
 
-    return header + csv_string
+    return MarketDataText(header + csv_string, data.attrs)
 
 
 def get_stock_stats_indicators_window(
@@ -132,9 +132,10 @@ def get_stock_stats_indicators_window(
     as_of_dt = datetime.strptime(as_of_date, "%Y-%m-%d")
     before = as_of_dt - relativedelta(days=look_back_days)
 
-    # Optimized: Get stock data once and calculate indicators for all dates
+    # Compute every value from the same acquired frame, including its warmup.
+    source_data = load_ohlcv(symbol, as_of_date, provider=provider)
     try:
-        indicator_data = _get_stock_stats_bulk(symbol, indicator, as_of_date, provider=provider)
+        indicator_data = _get_stock_stats_bulk(symbol, indicator, as_of_date, provider=provider, data=source_data)
 
         # Generate the date range we need
         current_dt = as_of_dt
@@ -158,34 +159,25 @@ def get_stock_stats_indicators_window(
 
     except VendorError:
         raise  # Unknown/delisted symbol — let the router emit the sentinel
-    except Exception as e:
-        logger.warning("Bulk stockstats fetch failed, falling back per-day: %s", e)
-        # Fallback to original implementation if bulk method fails
-        ind_string = ""
-        as_of_dt = datetime.strptime(as_of_date, "%Y-%m-%d")
-        while as_of_dt >= before:
-            indicator_value = get_stockstats_indicator(
-                symbol, indicator, as_of_dt.strftime("%Y-%m-%d"), provider=provider
-            )
-            ind_string += f"{as_of_dt.strftime('%Y-%m-%d')}: {indicator_value}\n"
-            as_of_dt = as_of_dt - relativedelta(days=1)
+    except Exception as exc:
+        raise NoMarketDataError(symbol, normalize_symbol(symbol), f"{indicator} calculation failed") from exc
 
     result_str = (
         f"## {indicator} values from {before.strftime('%Y-%m-%d')} to {end_date}:\n\n"
         + ind_string
         + "\n\n"
         + best_ind_params.get(indicator, "No description available.")
-        + f"\n\n{describe(symbol, provider)}"
+        + f"\n\n{describe(symbol, provider, source_data.attrs)}"
     )
 
-    return result_str
+    return MarketDataText(result_str, source_data.attrs)
 
 
 def _get_stock_stats_bulk(
     symbol: Annotated[str, "ticker symbol of the company"],
     indicator: Annotated[str, "technical indicator to calculate"],
     as_of_date: Annotated[str, "current date for reference"],
-    *, provider: str = "yfinance",
+    *, provider: str = "yfinance", data: pd.DataFrame | None = None,
 ) -> dict:
     """
     Optimized bulk calculation of stock stats indicators.
@@ -194,7 +186,7 @@ def _get_stock_stats_bulk(
     """
     from stockstats import wrap
 
-    data = load_ohlcv(symbol, as_of_date, provider=provider)
+    data = load_ohlcv(symbol, as_of_date, provider=provider) if data is None else data.copy()
     df = wrap(data)
     df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
 

@@ -265,7 +265,7 @@
   }
 
   function priceBasisText(data) {
-    if (data?.price_basis === "eastmoney_unadjusted_daily")
+    if (["eastmoney_unadjusted_daily", "tencent_unadjusted_daily", "sina_unadjusted_daily"].includes(data?.price_basis))
       return "日线不复权（CNY；成交量为股；除权除息影响指标）";
     if (data?.price_basis === "yahoo_close_auto_adjust_false")
       return "收盘价（不额外调整股息；历史可能按拆股调整）";

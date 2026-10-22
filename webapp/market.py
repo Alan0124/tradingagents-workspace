@@ -138,6 +138,7 @@ def get_market_history(config: dict) -> dict:
     try:
         with run_config(config):
             history = load_ohlcv(symbol, as_of_text, provider=provider)
+        info = history.attrs or info
         history = history.set_index("Date") if not history.empty else history
     except NoMarketDataError:
         history = None
