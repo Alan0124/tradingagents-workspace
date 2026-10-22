@@ -146,7 +146,8 @@ def test_explicit_source_and_mismatched_sources(monkeypatch, tmp_path):
     assert market_data.resolve_provider("600519", "yfinance") == "yfinance"
     assert market_data.resolve_provider("AAPL") == "yfinance"
     assert market_data.resolve_provider("600519") == "eastmoney"
-    for config in ({"data_vendors": {"core_stock_apis": "alpha_vantage"}},
+    for config in ({"data_vendors": {"core_stock_apis": "default", "technical_indicators": "default"}},
+                   {"data_vendors": {"core_stock_apis": "alpha_vantage"}},
                    {"tool_vendors": {"get_stock_data": "yfinance"}}):
         with run_config(config), pytest.raises(VendorUnavailableError, match="matching"):
             market_data.load_ohlcv("600519", DAY)

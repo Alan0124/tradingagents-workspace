@@ -19,7 +19,7 @@ from tradingagents.dataflows.vendors.yahoo import ohlcv as yahoo
 
 
 def resolve_provider(symbol: str, provider: str = "auto") -> str:
-    if provider in {"auto", "default"}:
+    if provider == "auto":
         return "eastmoney" if mainland_symbol(symbol) else "yfinance"
     return provider
 
