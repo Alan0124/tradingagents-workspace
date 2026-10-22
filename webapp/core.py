@@ -1198,6 +1198,9 @@ class Manager:
         llm_calls_left,
         tokens_left,
     ):
+        # Start and resume must send the same path spelling (macOS /var and
+        # /private/var aliases otherwise change the pinned market-data signature).
+        workdir = Path(workdir).resolve()
         process = None
         try:
             process = subprocess.Popen(

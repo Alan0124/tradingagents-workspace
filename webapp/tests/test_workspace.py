@@ -393,13 +393,14 @@ from pathlib import Path
 from webapp.worker import emit
 request=json.loads(sys.stdin.readline())
 directory=Path(request['directory'])
+assert directory == directory.resolve()
 marker=directory/'saved-checkpoint-marker'
 if not request.get('resume'):
-    marker.write_text('partial')
+    marker.write_text(str(directory))
     emit('report',key='market_report',text='partial market report')
     emit('stats',stats={'llm_calls':2,'tool_calls':1,'tokens_in':20,'tokens_out':10,'usage_known_calls':1,'usage_reported':True,'usage_complete':False})
     sys.exit(1)
-assert marker.read_text() == 'partial'
+assert marker.read_text() == str(directory)
 assert request['stats_base']['llm_calls'] == 2
 assert request['stats_base']['tokens_in'] == 20
 assert request['stats_base']['usage_known_calls'] == 1

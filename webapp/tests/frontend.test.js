@@ -16,6 +16,7 @@ const {
   orderReportKeys,
   reportPlaceholder,
   reportRenderKey,
+  renderReportTabs,
   reportTabTarget,
   selectRun,
   settingsRequestIsCurrent,
@@ -344,5 +345,48 @@ test("model choices keep catalog entries and leave custom selection explicit", (
     assert.notEqual(CUSTOM_MODEL_VALUE, "custom");
   } finally {
     state.meta = previousMeta;
+  }
+});
+
+
+test("background report refresh never scrolls the page or steals focus", () => {
+  const originalDocument = global.document;
+  const originalMeta = state.meta;
+  const originalTab = state.tab;
+  const originalSignature = state.tabSignature;
+  const calls = [];
+  const buttons = [];
+  const tabs = {
+    replaceChildren() { buttons.length = 0; },
+    append(button) { buttons.push(button); },
+    querySelectorAll() { return buttons; },
+    querySelector() { return buttons.find((b) => b.dataset.reportKey === "market_report"); },
+  };
+  global.document = {
+    activeElement: { dataset: {} },
+    querySelector: () => tabs,
+    createElement: () => ({
+      dataset: {}, classList: { toggle() {} }, setAttribute() {},
+      scrollIntoView() { calls.push("scroll"); },
+      focus(options) { calls.push(options); },
+    }),
+  };
+  try {
+    state.meta = { labels: { market_report: "技术面分析", news_report: "新闻分析" } };
+    state.tab = "market_report";
+    state.tabSignature = null;
+    renderReportTabs(["market_report"]);
+    renderReportTabs(["market_report"]);
+    renderReportTabs(["market_report", "news_report"]);
+    assert.deepEqual(calls, []);
+    // When a focused tab must be rebuilt, preserve keyboard focus without scrolling.
+    global.document.activeElement.dataset.reportKey = "market_report";
+    renderReportTabs(["market_report"]);
+    assert.deepEqual(calls, [{ preventScroll: true }]);
+  } finally {
+    global.document = originalDocument;
+    state.meta = originalMeta;
+    state.tab = originalTab;
+    state.tabSignature = originalSignature;
   }
 });

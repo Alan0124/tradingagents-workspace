@@ -798,14 +798,13 @@ function renderReportTabs(keys) {
     });
     state.tabSignature = signature;
     if (focusedKey && keys.includes(focusedKey))
-      tabs.querySelector(`[data-report-key="${focusedKey}"]`)?.focus();
+      tabs.querySelector(`[data-report-key="${focusedKey}"]`)?.focus({ preventScroll: true });
   }
   [...tabs.querySelectorAll('[role="tab"]')].forEach((b) => {
     const selected = b.dataset.reportKey === state.tab;
     b.setAttribute("aria-selected", String(selected));
     b.tabIndex = selected ? 0 : -1;
     b.classList.toggle("active", selected);
-    if (selected) b.scrollIntoView?.({ block: "nearest" });
   });
 }
 function activateReportTab(key) {
@@ -1113,6 +1112,7 @@ function reuseRun(run) {
   syncForm(c);
   renderModelSummary();
   inlineError("#form-error", "");
+  $("#analysis-settings").open = true;
   toast("已载入这次研究的配置，点击“开始研究”重试。");
   $("#analysis-form").scrollIntoView({ behavior: "smooth", block: "center" });
 }
@@ -1294,7 +1294,7 @@ function renderHistory() {
     holder.append(tr);
   });
   if (focusedRunId && runs.some((run) => run.id === focusedRunId))
-    holder.querySelector(`[data-run-id="${focusedRunId}"]`)?.focus();
+    holder.querySelector(`[data-run-id="${focusedRunId}"]`)?.focus({ preventScroll: true });
   renderVisuals();
 }
 function mergeRunsById(current, incoming) {
@@ -1649,6 +1649,7 @@ if (typeof module !== "undefined" && module.exports)
     CUSTOM_MODEL_VALUE,
     api,
     selectRun,
+    renderReportTabs,
     state,
   };
 if (typeof document !== "undefined") init();

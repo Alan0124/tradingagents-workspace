@@ -302,7 +302,7 @@
     const rows = document.querySelector("#evidence-report-rows");
     if (!rows) return;
     const items = buildEvidenceItems(run, labels);
-    rows.innerHTML = items
+    const html = items
       .map((item) => {
         const generation =
           item.generation === "generated"
@@ -341,6 +341,7 @@
         return `<section class="evidence-report-row"><div class="evidence-report-heading"><b>${escapeHtml(item.label)}</b><span class="generation-state">${generation} · ${qualityStatusLabel(item.status)}</span></div>${sourceRows}${note}${noSource}</section>`;
       })
       .join("");
+    if (rows.innerHTML !== html) rows.innerHTML = html;
     rows.hidden = items.length === 0;
   }
 
