@@ -1,4 +1,5 @@
 import logging
+from functools import partial
 
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.errors import (
@@ -7,6 +8,7 @@ from tradingagents.dataflows.errors import (
     VendorUnavailableError,
 )
 from tradingagents.dataflows.evidence import capture_result, current_ledger
+from tradingagents.dataflows.market_data import resolve_provider
 from tradingagents.dataflows.vendors import eastmoney_financials
 from tradingagents.dataflows.vendors.alpha_vantage import (
     get_balance_sheet as get_alpha_vantage_balance_sheet,
@@ -102,11 +104,13 @@ VENDOR_METHODS = {
     "get_stock_data": {
         "alpha_vantage": get_alpha_vantage_stock,
         "yfinance": get_YFin_data_online,
+        "eastmoney": partial(get_YFin_data_online, provider="eastmoney"),
     },
     # technical_indicators
     "get_indicators": {
         "alpha_vantage": get_alpha_vantage_indicator,
         "yfinance": get_stock_stats_indicators_window,
+        "eastmoney": partial(get_stock_stats_indicators_window, provider="eastmoney"),
     },
     # fundamental_data
     "get_fundamentals": {
@@ -233,6 +237,9 @@ def _route_to_vendor(method: str, *args, **kwargs):
     category = get_category_for_method(method)
     vendor_config = get_vendor(category, method)
     primary_vendors = [v.strip() for v in vendor_config.split(',')]
+    if method in {"get_stock_data", "get_indicators"}:
+        symbol = args[0] if args else kwargs.get("symbol", "")
+        primary_vendors = [resolve_provider(symbol, v) if v == "auto" else v for v in primary_vendors]
 
     if method not in VENDOR_METHODS:
         raise ValueError(f"Method '{method}' not supported")

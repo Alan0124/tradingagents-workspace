@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from tradingagents.dataflows import market_data
 from tradingagents.dataflows.vendors.yahoo import market, ohlcv, snapshot
 from webapp import market as chart_market
 
@@ -34,6 +35,7 @@ def _action_divergence_frame() -> pd.DataFrame:
 
 @pytest.mark.unit
 def test_yahoo_stock_indicators_snapshot_and_chart_share_close_basis(monkeypatch, tmp_path):
+    monkeypatch.setattr(market_data, "get_config", lambda: {"data_cache_dir": str(tmp_path), "market_snapshot_dir": str(tmp_path / "pinned")})
     frame = _action_divergence_frame()
     history_calls = []
 
@@ -64,7 +66,7 @@ def test_yahoo_stock_indicators_snapshot_and_chart_share_close_basis(monkeypatch
     assert f"Price basis: {ohlcv.PRICE_BASIS}" in verified
 
     chart_market._CACHE.clear()
-    monkeypatch.setattr(chart_market.yf, "download", lambda **kwargs: frame.copy())
     chart = chart_market.get_market_history({"ticker": "AAPL", "date": DAY})
     assert chart["series"][-1] == {"date": DAY, "close": 50.0}
     assert chart["price_basis"] == ohlcv.PRICE_BASIS
+    assert len(history_calls) == 1

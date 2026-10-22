@@ -1,4 +1,4 @@
-/* Charts use only run data and an explicit Yahoo Finance request. */
+/* Charts use the same saved daily market snapshot as the research tools. */
 "use strict";
 
 (function installTradingVisuals(root) {
@@ -265,6 +265,8 @@
   }
 
   function priceBasisText(data) {
+    if (data?.price_basis === "eastmoney_unadjusted_daily")
+      return "日线不复权（CNY；成交量为股；除权除息影响指标）";
     if (data?.price_basis === "yahoo_close_auto_adjust_false")
       return "收盘价（不额外调整股息；历史可能按拆股调整）";
     return typeof data?.price_basis === "string" && data.price_basis.trim()
@@ -405,7 +407,7 @@
     if (!el) return;
     const symbol = data.symbol || run?.config?.ticker || "标的";
     const asOf = data.as_of || run?.config?.date || "分析日期未知";
-    const source = data.source || "Yahoo Finance";
+    const source = data.source || "行情来源未提供";
     const currency = data.currency;
     const priceBasis = priceBasisText(data);
     if (sourceEl) {
@@ -414,7 +416,7 @@
     const points = prepareMarketSeries(data.series, asOf);
     if (!points.length) {
       el.innerHTML = emptyState(
-        `Yahoo Finance 未返回截至 ${asOf} 可用的收盘价。`,
+        `${source} 未返回截至 ${asOf} 可用的收盘价。`,
       );
       return;
     }
@@ -471,7 +473,7 @@
       button.disabled = true;
       button.textContent = "正在加载…";
       setMarketState(
-        `正在加载截至 ${run.config?.date || "分析日"} 的 Yahoo Finance 收盘价…`,
+        `正在加载截至 ${run.config?.date || "分析日"} 的共享行情收盘价…`,
         "is-loading",
       );
       try {
@@ -500,7 +502,7 @@
           "is-error",
         );
         const sourceEl = document.querySelector("#market-chart-source");
-        if (sourceEl) sourceEl.textContent = "行情来源：Yahoo Finance";
+        if (sourceEl) sourceEl.textContent = "行情来源尚未确认";
       } finally {
         if (version === requestVersion && selectedRun?.id === runId) {
           loadingRunId = null;
@@ -548,13 +550,13 @@
           const sourceEl = document.querySelector("#market-chart-source");
           if (sourceEl)
             sourceEl.textContent =
-              "Yahoo Finance · 日线 · 口径加载后显示 · 缓存最长 15 分钟";
+              "共享日线快照 · 来源和口径加载后显示";
         } else {
           setMarketState("开始研究后，可加载截至分析日的历史收盘价。");
           const sourceEl = document.querySelector("#market-chart-source");
           if (sourceEl)
             sourceEl.textContent =
-              "Yahoo Finance · 日线 · 行情缓存最长 15 分钟";
+              "共享日线快照 · 来源加载后显示";
         }
         renderCoverage(selectedRun, labels);
         renderUsage(selectedRun);

@@ -1,4 +1,4 @@
-"""Yahoo Finance history used by the local research charts."""
+"""Research charts read the same daily frame as indicators and reports."""
 
 from __future__ import annotations
 
@@ -10,13 +10,11 @@ import time
 from collections import OrderedDict
 from datetime import date, datetime, timedelta
 
-import yfinance as yf
-
+from tradingagents.dataflows.config import run_config
+from tradingagents.dataflows.errors import NoMarketDataError
+from tradingagents.dataflows.market_data import configured_provider, load_ohlcv, metadata
 from tradingagents.dataflows.symbols import normalize_symbol
-from tradingagents.dataflows.vendors.yahoo.ohlcv import PRICE_BASIS, PRICE_BASIS_CAVEAT
 
-SOURCE = "Yahoo Finance"
-MARKET_TIMEOUT_SECONDS = 8
 MARKET_LOOKBACK_DAYS = 120
 MARKET_CACHE_TTL_SECONDS = 15 * 60
 EMPTY_CACHE_TTL_SECONDS = 60
@@ -100,7 +98,7 @@ def _history_series(history, as_of: date) -> list[dict]:
 def get_market_history(config: dict) -> dict:
     """Return up to 120 calendar days of daily closes through config.date.
 
-    Empty Yahoo responses are returned as an empty series. Invalid configs raise
+    Empty provider responses are returned as an empty series. Invalid configs raise
     ``ValueError``; provider/network failures raise a short ``RuntimeError`` so
     the HTTP layer can return an error response to the chart.
     """
@@ -126,37 +124,31 @@ def get_market_history(config: dict) -> dict:
         raise ValueError("研究配置中的分析日期无效。")
 
     as_of_text = as_of.isoformat()
-    key = (symbol, as_of_text, PRICE_BASIS)
+    try:
+        with run_config(config):
+            provider = configured_provider(symbol)
+    except Exception as exc:
+        raise RuntimeError("共享行情源配置不一致或暂不支持。") from exc
+    info = metadata(symbol, provider)
+    key = (symbol, as_of_text, str(config.get("market_snapshot_dir", "")) + provider + info["price_basis"])
     cached = _read_cache(key)
     if cached is not None:
         return cached
 
-    # The start and exclusive end span exactly 120 calendar days, including
-    # the configured analysis date in Yahoo's daily history request.
-    start = as_of - timedelta(days=MARKET_LOOKBACK_DAYS - 1)
-    end = as_of + timedelta(days=1)
     try:
-        history = yf.download(
-            tickers=symbol,
-            start=start.isoformat(),
-            end=end.isoformat(),
-            interval="1d",
-            auto_adjust=False,
-            actions=False,
-            progress=False,
-            threads=False,
-            timeout=MARKET_TIMEOUT_SECONDS,
-        )
+        with run_config(config):
+            history = load_ohlcv(symbol, as_of_text, provider=provider)
+        history = history.set_index("Date") if not history.empty else history
+    except NoMarketDataError:
+        history = None
     except Exception as exc:
-        raise RuntimeError("Yahoo Finance 行情暂时不可用。") from exc
+        raise RuntimeError("共享行情暂时不可用。") from exc
 
     payload = {
         "series": _history_series(history, as_of),
         "symbol": symbol,
         "as_of": as_of_text,
-        "source": SOURCE,
-        "price_basis": PRICE_BASIS,
-        "price_basis_note": PRICE_BASIS_CAVEAT,
+        **info,
     }
     ttl = MARKET_CACHE_TTL_SECONDS if payload["series"] else EMPTY_CACHE_TTL_SECONDS
     _write_cache(key, payload, ttl)

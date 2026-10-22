@@ -187,7 +187,9 @@ def test_every_vendor_unavailable_says_so_rather_than_crashing(monkeypatch):
 
 
 @pytest.mark.unit
-def test_the_price_path_also_tells_an_outage_from_an_unknown_symbol(monkeypatch):
+def test_the_price_path_also_tells_an_outage_from_an_unknown_symbol(monkeypatch, tmp_path):
+    from tradingagents.dataflows.config import set_config
+    set_config({"data_cache_dir": str(tmp_path)})
     """Prices are the most-used path, so an outage there must not read as a
     delisted symbol either."""
     import pandas as pd
@@ -216,7 +218,9 @@ def test_the_price_path_also_tells_an_outage_from_an_unknown_symbol(monkeypatch)
         (yahoo_fundamentals.get_insider_transactions, ("AAPL", "2025-06-06")),
     )
 ])
-def test_a_historical_run_is_not_told_todays_date(func, args):
+def test_a_historical_run_is_not_told_todays_date(func, args, tmp_path):
+    from tradingagents.dataflows.config import set_config
+    set_config({"data_cache_dir": str(tmp_path)})
     """A header stamped with the wall clock tells a backtest when it is really running."""
     from datetime import date
 

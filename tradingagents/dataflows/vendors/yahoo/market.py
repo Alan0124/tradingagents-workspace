@@ -8,14 +8,9 @@ from dateutil.relativedelta import relativedelta
 from stockstats import wrap
 
 from tradingagents.dataflows.errors import NoMarketDataError, VendorError
+from tradingagents.dataflows.market_data import describe, load_ohlcv
 from tradingagents.dataflows.symbols import normalize_symbol
-from tradingagents.dataflows.vendors.yahoo.common import raise_for_empty, yf_retry
-from tradingagents.dataflows.vendors.yahoo.ohlcv import (
-    PRICE_BASIS,
-    PRICE_BASIS_CAVEAT,
-    _assert_ohlcv_not_stale,
-    load_ohlcv,
-)
+from tradingagents.dataflows.vendors.yahoo.common import yf_retry
 
 logger = logging.getLogger(__name__)
 
@@ -24,55 +19,23 @@ def get_YFin_data_online(
     symbol: Annotated[str, "ticker symbol of the company"],
     start_date: Annotated[str, "Start date in yyyy-mm-dd format"],
     end_date: Annotated[str, "End date in yyyy-mm-dd format"],
+    *, provider: str = "yfinance",
 ):
 
     datetime.strptime(start_date, "%Y-%m-%d")
-    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-
-    # Resolve broker/forex symbols to Yahoo's convention (XAUUSD+ -> GC=F).
+    datetime.strptime(end_date, "%Y-%m-%d")
+    if start_date > end_date:
+        raise ValueError("start_date must not exceed end_date")
     canonical = normalize_symbol(symbol)
-
-    # yfinance treats ``end`` as EXCLUSIVE, so it would drop the requested
-    # end_date row (and the current day when end_date is today). Request one day
-    # past end_date so the requested range is actually inclusive (#986/#987).
-    end_inclusive = (end_dt + relativedelta(days=1)).strftime("%Y-%m-%d")
-    data = yf_retry(lambda: yf.Ticker(canonical).history(
-        start=start_date,
-        end=end_inclusive,
-        auto_adjust=False,
-        actions=False,
-    ))
-
-    # Empty result means the symbol is unknown/delisted. Raise a typed error
-    # instead of returning prose: the routing layer turns it into a single
-    # unambiguous "no data" signal so the agent never fabricates a price.
-    if data is None or data.empty:
-        raise_for_empty(symbol, canonical, f"rows between {start_date} and {end_date}")
-
-    # Remove timezone info from index for cleaner output
-    if data.index.tz is not None:
-        data.index = data.index.tz_localize(None)
-
-    # Reject a stale frame (e.g. a year-old partial response) before it is
-    # formatted into the report. Raises NoMarketDataError, which the router
-    # turns into one clear unavailable signal (#1021).
-    _assert_ohlcv_not_stale(data, end_date, symbol, canonical)
-
-    # Round numerical values to 2 decimal places for cleaner display
-    numeric_columns = ["Open", "High", "Low", "Close", "Adj Close"]
-    for col in numeric_columns:
-        if col in data.columns:
-            data[col] = data[col].round(2)
-
-    csv_string = data.to_csv()
-
-    # Name the resolved symbol when it differs, so the reader sees which
-    # instrument was priced.
+    data = load_ohlcv(symbol, end_date, provider=provider)
+    data = data[data["Date"] >= pd.Timestamp(start_date)].copy()
+    if data.empty:
+        raise NoMarketDataError(symbol, canonical, "no rows in requested daily window")
+    csv_string = data.to_csv(index=False)
     label = canonical if canonical == symbol.upper() else f"{canonical} (from {symbol})"
     header = f"# Stock data for {label} from {start_date} to {end_date}\n"
     header += f"# Total records: {len(data)}\n\n"
-    header += f"# Price basis: {PRICE_BASIS}\n"
-    header += f"# Price caveat: {PRICE_BASIS_CAVEAT}\n\n"
+    header += "\n".join(f"# {line}" for line in describe(symbol, provider).splitlines()) + "\n\n"
 
     return header + csv_string
 
@@ -84,6 +47,7 @@ def get_stock_stats_indicators_window(
         str, "The current trading date you are trading on, YYYY-mm-dd"
     ],
     look_back_days: Annotated[int, "how many days to look back"],
+    *, provider: str = "yfinance",
 ) -> str:
 
     best_ind_params = {
@@ -170,7 +134,7 @@ def get_stock_stats_indicators_window(
 
     # Optimized: Get stock data once and calculate indicators for all dates
     try:
-        indicator_data = _get_stock_stats_bulk(symbol, indicator, as_of_date)
+        indicator_data = _get_stock_stats_bulk(symbol, indicator, as_of_date, provider=provider)
 
         # Generate the date range we need
         current_dt = as_of_dt
@@ -201,7 +165,7 @@ def get_stock_stats_indicators_window(
         as_of_dt = datetime.strptime(as_of_date, "%Y-%m-%d")
         while as_of_dt >= before:
             indicator_value = get_stockstats_indicator(
-                symbol, indicator, as_of_dt.strftime("%Y-%m-%d")
+                symbol, indicator, as_of_dt.strftime("%Y-%m-%d"), provider=provider
             )
             ind_string += f"{as_of_dt.strftime('%Y-%m-%d')}: {indicator_value}\n"
             as_of_dt = as_of_dt - relativedelta(days=1)
@@ -211,7 +175,7 @@ def get_stock_stats_indicators_window(
         + ind_string
         + "\n\n"
         + best_ind_params.get(indicator, "No description available.")
-        + f"\n\nPrice basis: {PRICE_BASIS}. {PRICE_BASIS_CAVEAT}"
+        + f"\n\n{describe(symbol, provider)}"
     )
 
     return result_str
@@ -220,7 +184,8 @@ def get_stock_stats_indicators_window(
 def _get_stock_stats_bulk(
     symbol: Annotated[str, "ticker symbol of the company"],
     indicator: Annotated[str, "technical indicator to calculate"],
-    as_of_date: Annotated[str, "current date for reference"]
+    as_of_date: Annotated[str, "current date for reference"],
+    *, provider: str = "yfinance",
 ) -> dict:
     """
     Optimized bulk calculation of stock stats indicators.
@@ -229,7 +194,7 @@ def _get_stock_stats_bulk(
     """
     from stockstats import wrap
 
-    data = load_ohlcv(symbol, as_of_date)
+    data = load_ohlcv(symbol, as_of_date, provider=provider)
     df = wrap(data)
     df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
 
@@ -254,6 +219,7 @@ def get_stockstats_indicator(
     as_of_date: Annotated[
         str, "The current trading date you are trading on, YYYY-mm-dd"
     ],
+    *, provider: str = "yfinance",
 ) -> str:
 
     as_of_dt = datetime.strptime(as_of_date, "%Y-%m-%d")
@@ -264,6 +230,7 @@ def get_stockstats_indicator(
             symbol,
             indicator,
             as_of_date,
+            provider=provider,
         )
     except VendorError:
         raise  # Unknown/delisted symbol — let the router emit the sentinel
@@ -302,8 +269,9 @@ def get_stock_stats(
     as_of_date: Annotated[
         str, "curr date for retrieving stock price data, YYYY-mm-dd"
     ],
+    *, provider: str = "yfinance",
 ):
-    data = load_ohlcv(symbol, as_of_date)
+    data = load_ohlcv(symbol, as_of_date, provider=provider)
     df = wrap(data)
     df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
     as_of_str = pd.to_datetime(as_of_date).strftime("%Y-%m-%d")

@@ -16,11 +16,11 @@ import pandas as pd
 from stockstats import wrap
 
 from tradingagents.dataflows.errors import NoMarketDataError
+from tradingagents.dataflows.market_data import load_ohlcv
 from tradingagents.dataflows.symbols import normalize_symbol
 from tradingagents.dataflows.vendors.yahoo.ohlcv import (
     PRICE_BASIS,
     PRICE_BASIS_CAVEAT,
-    load_ohlcv,
 )
 
 # A fixed, common indicator set so the snapshot is the same shape every run.
@@ -89,6 +89,7 @@ def build_verified_market_snapshot(
         except Exception as exc:  # noqa: BLE001 — one bad indicator shouldn't sink the snapshot
             indicator_values[name] = f"N/A ({type(exc).__name__})"
 
+    info = df.attrs
     latest = df.iloc[-1]
     latest_date = _fmt(latest["Date"])
     window = max(1, min(int(look_back_days), 30))
@@ -98,8 +99,10 @@ def build_verified_market_snapshot(
         f"## Verified market data snapshot for {symbol.upper()}",
         "",
         f"- Requested analysis date: {as_of_date}",
-        f"- Price basis: {PRICE_BASIS}",
-        f"- Price caveat: {PRICE_BASIS_CAVEAT}",
+        f"- Source: {info.get('source', 'Yahoo Finance')}",
+        f"- Currency: {info.get('currency', 'vendor quote currency')}; volume unit: {info.get('volume_unit', 'vendor native volume')}",
+        f"- Price basis: {info.get('price_basis', PRICE_BASIS)}",
+        f"- Price caveat: {info.get('price_basis_note', PRICE_BASIS_CAVEAT)}",
         f"- Latest trading row used: {latest_date}",
         "- Rows after the requested analysis date are excluded before verification.",
         "",

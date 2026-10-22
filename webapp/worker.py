@@ -178,6 +178,7 @@ def execute(request, graph_class=None, stats_class=None):
             output_language=chosen["language"],
             results_dir=str(directory),
             data_cache_dir=str(cache_directory),
+            market_snapshot_dir=str(cache_directory / "market"),
             checkpoint_enabled=True,
             llm_max_retries=0,
             max_tokens=(

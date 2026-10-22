@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
+from tradingagents.dataflows.vendors.yahoo.ohlcv import PRICE_BASIS
 from webapp import market
 from webapp.core import Manager, Store
 from webapp.server import Server
@@ -38,7 +39,7 @@ class MarketTests(unittest.TestCase):
             ],
         )
         config = {"ticker": "BTCUSD", "date": as_of.isoformat()}
-        with patch.object(market.yf, "download", return_value=frame) as download:
+        with patch.object(market, "load_ohlcv", return_value=frame.rename_axis("Date").reset_index()) as download:
             result = market.get_market_history(config)
             original = json.loads(json.dumps(result))
             result["series"].clear()
@@ -51,20 +52,10 @@ class MarketTests(unittest.TestCase):
             ],
         )
         self.assertEqual(original["symbol"], "BTC-USD")
-        self.assertEqual(original["price_basis"], market.PRICE_BASIS)
+        self.assertEqual(original["price_basis"], PRICE_BASIS)
         self.assertIn("not a raw trade tape", original["price_basis_note"])
         self.assertIn("point-in-time", original["price_basis_note"])
-        kwargs = download.call_args.kwargs
-        self.assertEqual(kwargs["tickers"], "BTC-USD")
-        self.assertEqual(kwargs["end"], "2026-01-11")
-        self.assertEqual(
-            date.fromisoformat(kwargs["end"]) - date.fromisoformat(kwargs["start"]),
-            timedelta(days=120),
-        )
-        self.assertEqual(kwargs["timeout"], market.MARKET_TIMEOUT_SECONDS)
-        self.assertFalse(kwargs["threads"])
-        self.assertFalse(kwargs["auto_adjust"])
-        download.assert_called_once()
+        download.assert_called_once_with("BTC-USD", "2026-01-10", provider="yfinance")
 
     def test_chart_uses_close_when_adj_close_differs(self):
         as_of = date(2026, 1, 10)
@@ -72,17 +63,17 @@ class MarketTests(unittest.TestCase):
             {"Close": [50.0], "Adj Close": [37.5]},
             index=[as_of],
         )
-        with patch.object(market.yf, "download", return_value=frame) as download:
+        with patch.object(market, "load_ohlcv", return_value=frame.rename_axis("Date").reset_index()) as download:
             result = market.get_market_history({"ticker": "AAPL", "date": as_of.isoformat()})
 
         self.assertEqual(result["series"], [{"date": as_of.isoformat(), "close": 50.0}])
-        self.assertEqual(result["price_basis"], market.PRICE_BASIS)
+        self.assertEqual(result["price_basis"], PRICE_BASIS)
         self.assertIn("Adj Close is not", result["price_basis_note"])
-        self.assertFalse(download.call_args.kwargs["auto_adjust"])
+        download.assert_called_once_with("AAPL", "2026-01-10", provider="yfinance")
 
     def test_empty_history_is_cached(self):
         config = {"ticker": "AAPL", "date": "2026-01-10"}
-        with patch.object(market.yf, "download", return_value=pd.DataFrame()) as download:
+        with patch.object(market, "load_ohlcv", return_value=pd.DataFrame()) as download:
             first = market.get_market_history(config)
             self.assertEqual(first, market.get_market_history(config))
         self.assertEqual(first["series"], [])
@@ -90,8 +81,8 @@ class MarketTests(unittest.TestCase):
 
     def test_network_error_does_not_expose_provider_details(self):
         with (
-            patch.object(market.yf, "download", side_effect=TimeoutError("private details")),
-            self.assertRaisesRegex(RuntimeError, "Yahoo Finance 行情暂时不可用") as error,
+            patch.object(market, "load_ohlcv", side_effect=TimeoutError("private details")),
+            self.assertRaisesRegex(RuntimeError, "共享行情暂时不可用") as error,
         ):
             market.get_market_history({"ticker": "AAPL", "date": "2026-01-10"})
         self.assertNotIn("private details", str(error.exception))
@@ -103,7 +94,7 @@ class MarketTests(unittest.TestCase):
             {"ticker": "AAPL", "date": "2026-02-30"},
             {"ticker": "AAPL", "date": "2026-01-10T00:00:00"},
         ]:
-            with self.subTest(config=config), patch.object(market.yf, "download") as download:
+            with self.subTest(config=config), patch.object(market, "load_ohlcv") as download:
                 with self.assertRaises(ValueError):
                     market.get_market_history(config)
                 download.assert_not_called()
@@ -125,7 +116,10 @@ class MarketTests(unittest.TestCase):
                         server.origin + "/api/runs/saved/market"
                     ) as response:
                         self.assertEqual(json.load(response), {"series": []})
-                    helper.assert_called_once_with(config)
+                    called = helper.call_args.args[0]
+                    self.assertEqual(called["ticker"], config["ticker"])
+                    self.assertEqual(called["date"], config["date"])
+                    self.assertEqual(called["market_snapshot_dir"], str(store.root.resolve() / "runs" / "saved" / "cache" / "market"))
                 with patch(
                     "webapp.server.get_market_history", side_effect=RuntimeError("行情不可用")
                 ):

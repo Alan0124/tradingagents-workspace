@@ -12,6 +12,7 @@ from langgraph.prebuilt import InjectedState
 from tradingagents.dataflows.date_window import as_of, as_of_window
 from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
 from tradingagents.dataflows.evidence import capture_result
+from tradingagents.dataflows.market_data import configured_provider
 from tradingagents.dataflows.router import no_data_available, route_to_vendor, vendor_unavailable
 from tradingagents.dataflows.vendors.yahoo.snapshot import build_verified_market_snapshot
 
@@ -87,15 +88,17 @@ def get_verified_market_snapshot(
     resistance, or historical comparisons, and treat it as the source of truth.
     """
     # An exception out of a tool would end the run.
+    provider = "shared_market_data"
     try:
+        provider = configured_provider(symbol)
         served_date = as_of(curr_date, trade_date)
         result = build_verified_market_snapshot(symbol, served_date, look_back_days)
-        return capture_result("get_verified_market_snapshot", "yfinance", (symbol, served_date, look_back_days), {}, result)
+        return capture_result("get_verified_market_snapshot", provider, (symbol, served_date, look_back_days), {}, result)
     except VendorUnavailableError as exc:
-        return capture_result("get_verified_market_snapshot", "yfinance", (symbol, curr_date), {},
+        return capture_result("get_verified_market_snapshot", provider, (symbol, curr_date), {},
                               vendor_unavailable("get_verified_market_snapshot", exc))
     except NoMarketDataError as exc:
-        return capture_result("get_verified_market_snapshot", "yfinance", (symbol, curr_date), {},
+        return capture_result("get_verified_market_snapshot", provider, (symbol, curr_date), {},
                               no_data_available(exc))
 
 

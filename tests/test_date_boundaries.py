@@ -15,7 +15,8 @@ from tradingagents.dataflows.vendors.yahoo import ohlcv
 
 
 @pytest.mark.unit
-def test_get_yfin_requests_inclusive_end(monkeypatch):
+def test_get_yfin_requests_inclusive_end(monkeypatch, tmp_path):
+    set_config({"data_cache_dir": str(tmp_path)})
     captured = {}
 
     class FakeTicker:
@@ -36,8 +37,10 @@ def test_get_yfin_requests_inclusive_end(monkeypatch):
     monkeypatch.setattr(yfin.yf, "Ticker", FakeTicker)
     out = yfin.get_YFin_data_online("AAPL", "2025-05-01", "2025-05-09")
 
-    # end is requested one day past end_date so 2025-05-09 is included (#987).
-    assert captured["end"] == "2025-05-10"
+    # The common Yahoo cache downloads through today (+1 exclusive), then
+    # the stock tool applies the requested inclusive date window.
+    assert captured["end"] == (pd.Timestamp.today() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    assert "2025-05-09" in out
     assert captured["auto_adjust"] is False
     assert captured["actions"] is False
     # Header still reflects the requested range, not the internal +1 day.

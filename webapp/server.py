@@ -215,9 +215,25 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 )
             ext = parts[3]
+            if ext in {"market", "evidence.json"}:
+                run_root = (self.server.manager.store.root / "runs").resolve()
+                candidate_directory = run_root / parts[2]
+                if candidate_directory.is_symlink():
+                    raise KeyError("未找到证据文件。")
+                run_directory = candidate_directory.resolve()
+                try:
+                    run_directory.relative_to(run_root)
+                except ValueError:
+                    raise KeyError("未找到证据文件。") from None
+                if run_directory.parent != run_root:
+                    raise KeyError("未找到证据文件。")
             if ext == "market":
                 try:
-                    return self.send(get_market_history(run["config"]))
+                    cache_dir = run_directory / "cache"
+                    return self.send(get_market_history({
+                        **run["config"], "data_cache_dir": str(cache_dir),
+                        "market_snapshot_dir": str(cache_dir / "market"),
+                    }))
                 except ValueError as exc:
                     return self.send({"error": str(exc)}, 400)
                 except RuntimeError as exc:
@@ -235,17 +251,6 @@ class Handler(BaseHTTPRequestHandler):
                     disposition=f'attachment; filename="{run["config"]["ticker"]}-{run["config"]["date"]}.html"',
                 )
             if ext == "evidence.json":
-                run_root = (self.server.manager.store.root / "runs").resolve()
-                candidate_directory = run_root / parts[2]
-                if candidate_directory.is_symlink():
-                    raise KeyError("未找到证据文件。")
-                run_directory = candidate_directory.resolve()
-                try:
-                    run_directory.relative_to(run_root)
-                except ValueError:
-                    raise KeyError("未找到证据文件。") from None
-                if run_directory.parent != run_root:
-                    raise KeyError("未找到证据文件。")
                 evidence_path = run_directory / "evidence.json"
                 if not evidence_path.is_file() or evidence_path.is_symlink():
                     raise KeyError("未找到证据文件。")
