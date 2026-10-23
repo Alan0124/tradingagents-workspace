@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
+from unittest.mock import patch
 
 from webapp.core import MD, Manager, Store, display_report, document, report_html
 from webapp.report_sources import readable_report, render_report, source_page
@@ -45,6 +46,29 @@ class VisibleText(HTMLParser):
 
 
 class ReadableSourceTests(unittest.TestCase):
+    def test_empty_fields_hidden_in_rendered_reports_and_exports_only(self):
+        run = saved_run()
+        empty = ["**Time Horizon**: not provided", "- **Investment Horizon:** N/A",
+                 "Holding Period: unknown", "**持有期限**：未设定", "Entry Price:",
+                 "Confidence: `null`", "Position Size: not specified"]
+        substantive = ["Time Horizon: long term", "目标价：1500 元（模型估计）",
+                       "Position Size: 0", "财务异常：无", "未提供目标价，需要继续核验。"]
+        run["reports"]["final_trade_decision"] = "\n\n".join(empty + substantive)
+        original = copy.deepcopy(run)
+        for result in [render_report(run, "final_trade_decision",
+                                    run["reports"]["final_trade_decision"], MD),
+                       document(run), report_html(run)]:
+            for placeholder in ["not provided", "N/A", "unknown", "未设定", "Entry Price", "null",
+                                "not specified"]:
+                self.assertNotIn(placeholder, result)
+            for value in substantive:
+                self.assertIn(value, result)
+        self.assertEqual(run, original)
+
+    def test_missing_field_filter_preserves_fenced_examples_and_nonempty_values(self):
+        text = "```text\nTime Horizon: not provided\n```\n\nStop Loss: 1200\n风险提示：未知事件可能影响市场。"
+        self.assertEqual(readable_report(text), text)
+
     def test_existing_report_becomes_readable_without_mutating_research(self):
         run = saved_run()
         original = copy.deepcopy(run)
@@ -125,8 +149,11 @@ class ReadableSourceTests(unittest.TestCase):
             thread.start()
             base = server.origin + "/api/runs/" + RUN_ID
             try:
-                with urllib.request.urlopen(base) as response:
+                with patch("webapp.server.instrument_name", return_value="贵州茅台"), \
+                        urllib.request.urlopen(base) as response:
                     data = json.load(response)
+                self.assertEqual(data["display_name"], "贵州茅台")
+                self.assertNotIn("display_name", store.get(RUN_ID))
                 self.assertIn("evidence.html", data["rendered"]["final_trade_decision"])
                 self.assertEqual(data["reports"], run["reports"])
                 with urllib.request.urlopen(base + "/evidence.html?source=" + RECEIPT) as response:

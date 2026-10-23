@@ -35,6 +35,7 @@ from webapp.core import (
     report_html,
     save_settings,
 )
+from webapp.instruments import instrument_name
 from webapp.market import get_market_history
 from webapp.report_sources import render_report, source_page
 
@@ -217,6 +218,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(
                     {
                         **run,
+                        "display_name": instrument_name(run["config"]["ticker"]),
                         "rendered": {
                             k: render_report(run, k, v, MD, sources_available=sources_available)
                             for k, v in run["reports"].items()

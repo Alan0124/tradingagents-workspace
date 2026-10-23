@@ -913,11 +913,11 @@ function renderPipeline() {
 }
 function renderRun() {
   const run = state.run;
-  text($("#workspace-title"), run ? run.config.ticker : "研究工作台");
+  text($("#workspace-title"), run ? run.display_name || run.config.ticker : "研究工作台");
   text(
     $("#workspace-description"),
     run
-      ? `${run.config.date} · ${providerInfo(run.config.provider)?.name || run.config.provider} · ${statusLabels[run.status] || run.status}`
+      ? `${run.config.ticker} · ${run.config.date} · ${providerInfo(run.config.provider)?.name || run.config.provider} · ${statusLabels[run.status] || run.status}`
       : "选择标的，启动研究；结论、来源与过程保存在本机。",
   );
   renderSetupSummary();

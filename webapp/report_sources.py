@@ -22,6 +22,37 @@ _DIMENSIONS = {
 _AUDIT = re.compile(
     r"(?m)^#{2,4}\s+(?:结论与证据引用|Decision evidence references|证据引用说明|Evidence reference check)\s*$"
 )
+_EMPTY_VALUE = re.compile(
+    r"(?:not\s+(?:provided|available|applicable|specified|set)|"
+    r"n\s*(?:/|\.)?\s*a\.?|none|null|unknown|unavailable|tbd|no\s+data|"
+    r"未提供|未填写|未指定|未设定|未設定|暂无|暫無|缺失|不适用|不適用|未知|未披露)?[.!。]?",
+    re.I,
+)
+_FIELD = re.compile(r"[A-Za-z\u3400-\u9fff][A-Za-z0-9\u3400-\u9fff /()（）_-]{0,60}")
+
+
+def omit_empty_fields(text):
+    """Hide standalone empty metadata fields, preserving prose and code blocks."""
+    lines = []
+    fence = None
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        marker = re.match(r"(`{3,}|~{3,})", stripped)
+        if marker:
+            if fence is None:
+                fence = marker[1]
+            elif stripped.startswith(fence) and not stripped[len(fence):].strip():
+                fence = None
+            lines.append(line)
+            continue
+        candidate = re.sub(r"^[-*•]\s+", "", stripped)
+        candidate = re.sub(r"\*\*|__|`", "", candidate)
+        field = re.split(r"[:：]", candidate, maxsplit=1)
+        if (fence is None and len(field) == 2 and _FIELD.fullmatch(field[0].strip())
+                and _EMPTY_VALUE.fullmatch(field[1].strip())):
+            continue
+        lines.append(line)
+    return "".join(lines)
 
 
 def source_title(source, report_key=None):
@@ -50,7 +81,7 @@ def source_catalog(run):
 def readable_report(text, run=None, *, links=False):
     """Project saved reports for readers without changing model output or audits."""
     parts = _AUDIT.split(text, maxsplit=1)
-    body = parts[0].rstrip()
+    body = omit_empty_fields(parts[0]).rstrip()
     if len(parts) > 1:
         audit = parts[1]
         if re.search(r"引用待核对|正文引用待核对|未提供逐项结论引用|Unverified", audit):
