@@ -26,6 +26,8 @@ const icons = {
   target:
     '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
+  x: '<path d="m6 6 12 12M18 6 6 18"/>',
+  arrow: '<path d="M4 12h16m-6-6 6 6-6 6"/>',
 };
 const svg = (name) =>
   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.grid}</svg>`;
@@ -588,6 +590,9 @@ async function startAnalysis(event) {
   };
   if (!payload.analysts.length) {
     inlineError("#form-error", "请至少选择一位分析师。");
+    const options = $("#research-options");
+    if (options) options.open = true;
+    $("input[name=analysts]:not(:disabled)")?.focus();
     return;
   }
   state.busy = true;
@@ -646,6 +651,11 @@ function reportPlaceholder(run) {
   if (run?.status === "failed" || run?.status === "interrupted")
     return "研究未能完成，尚未收到分析报告。你可以复用配置后重试。";
   return "尚未收到分析报告。";
+}
+function runStageText(run) {
+  if (typeof run?.stage === "string" && run.stage.trim()) return run.stage;
+  if (!run) return "团队已就绪，等待研究任务";
+  return statusLabels[run.status] || "研究状态未知";
 }
 function canResumeRun(run) {
   return !!run && ["interrupted", "failed", "cancelled"].includes(run.status);
@@ -766,9 +776,14 @@ function setupSummaryText() {
 }
 function renderSetupSummary() {
   text($("#setup-brief"), setupSummaryText());
+  text(
+    $("#research-options-brief"),
+    `${$$("input[name=analysts]:checked").length} 个维度 · ${state.rounds} 轮辩论`,
+  );
 }
 function renderReportTabs(keys) {
   const tabs = $("#report-tabs");
+  const chapterPicker = $("#report-chapter");
   const signature = keys.map((k) => `${k}:${state.meta.labels[k]}`).join("|");
   if (signature !== state.tabSignature) {
     const focusedKey = document.activeElement?.dataset?.reportKey;
@@ -796,6 +811,22 @@ function renderReportTabs(keys) {
       };
       tabs.append(b);
     });
+    if (chapterPicker) {
+      chapterPicker.replaceChildren();
+      if (keys.length) {
+        keys.forEach((key) => {
+          const option = document.createElement("option");
+          option.value = key;
+          option.textContent = state.meta.labels[key];
+          chapterPicker.append(option);
+        });
+      } else {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "等待报告生成";
+        chapterPicker.append(option);
+      }
+    }
     state.tabSignature = signature;
     if (focusedKey && keys.includes(focusedKey))
       tabs.querySelector(`[data-report-key="${focusedKey}"]`)?.focus({ preventScroll: true });
@@ -806,12 +837,16 @@ function renderReportTabs(keys) {
     b.tabIndex = selected ? 0 : -1;
     b.classList.toggle("active", selected);
   });
+  if (chapterPicker) {
+    chapterPicker.disabled = keys.length === 0;
+    chapterPicker.value = state.tab || "";
+  }
 }
-function activateReportTab(key) {
+function activateReportTab(key, { focusTab = true } = {}) {
   state.tab = key;
   state.lastReport = "";
   renderRun();
-  $("#tab-" + key)?.focus();
+  if (focusTab) $("#tab-" + key)?.focus();
 }
 function renderPipeline() {
   const run = state.run,
@@ -841,33 +876,54 @@ function renderPipeline() {
   if (reports.aggressive || reports.conservative || reports.neutral)
     current = Math.max(current, 3);
   const holder = $("#pipeline");
-  holder.replaceChildren();
+  if (holder.children.length !== stages.length) {
+    holder.replaceChildren();
+    stages.forEach(() => {
+      const item = document.createElement("div");
+      item.append(
+        document.createElement("div"),
+        document.createElement("b"),
+        document.createElement("small"),
+      );
+      holder.append(item);
+    });
+  }
   stages.forEach(([icon, title, sub], i) => {
-    const item = document.createElement("div");
+    const item = holder.children[i];
     item.className =
       "pipeline-node" +
       (completed[i] ? " done" : active(run) && i === current ? " current" : "");
-    const symbol = document.createElement("div");
-    symbol.innerHTML = svg(completed[i] ? "check" : icon);
-    const b = document.createElement("b");
-    b.textContent = title;
-    const small = document.createElement("small");
-    small.textContent = completed[i]
-      ? "已完成"
-      : active(run) && i === current
-        ? "正在进行"
-        : sub;
-    item.append(symbol, b, small);
-    holder.append(item);
+    const [symbol, heading, detail] = item.children;
+    const iconMarkup = svg(completed[i] ? "check" : icon);
+    if (symbol.innerHTML !== iconMarkup) symbol.innerHTML = iconMarkup;
+    text(heading, title);
+    text(
+      detail,
+      completed[i]
+        ? "已完成"
+        : active(run) && i === current
+          ? "正在进行"
+          : sub,
+    );
   });
 }
 function renderRun() {
   const run = state.run;
+  text($("#workspace-title"), run ? run.config.ticker : "研究工作台");
+  text(
+    $("#workspace-description"),
+    run
+      ? `${run.config.date} · ${providerInfo(run.config.provider)?.name || run.config.provider} · ${statusLabels[run.status] || run.status}`
+      : "选择标的，启动研究；结论、来源与过程保存在本机。",
+  );
   renderSetupSummary();
   const processDetails = $("#process-details");
-  if (run?.id !== processRunId) {
+  const runId = run?.id || null;
+  if (runId !== processRunId) {
     processDetails.open = !!active(run);
-    processRunId = run?.id || null;
+    const evidenceDetails = $("#evidence-details");
+    if (evidenceDetails) evidenceDetails.open = false;
+    processRunId = runId;
   } else if (previousProcessWasActive && !active(run)) {
     processDetails.open = false;
   }
@@ -883,7 +939,7 @@ function renderRun() {
       ? `${run.config.ticker} · ${run.config.date} · ${providerInfo(run.config.provider)?.name || run.config.provider}`
       : "研究阶段与运行状态会显示在这里。",
   );
-  text($("#stage-text"), run?.stage || "团队已就绪，等待研究任务");
+  text($("#stage-text"), runStageText(run));
   $("#activity-dot").classList.toggle("running", !!active(run));
   $("#cancel-run").hidden = !active(run);
   $("#cancel-run").disabled = run?.status === "cancelling";
@@ -944,7 +1000,9 @@ function renderRun() {
   $("#report-content").hidden = !run;
   text(
     $("#report-subtitle"),
-    run ? `${run.config.ticker} / ${run.config.date}` : "RESEARCH BRIEF",
+    run
+      ? `${run.config.ticker} / ${run.config.date}`
+      : "开始研究后，报告将逐章生成",
   );
   const reportData = run?.reports || {};
   const hasReports = run && Object.keys(reportData).length > 0;
@@ -1512,6 +1570,9 @@ async function init() {
     settingsProvider(true);
   });
   $("#ticker").addEventListener("input", () => assetChanged());
+  $$("input[name=analysts]").forEach((checkbox) =>
+    checkbox.addEventListener("change", renderSetupSummary),
+  );
   $("#analysis-date").addEventListener("input", renderSetupSummary);
   $("#analysis-settings").addEventListener("toggle", renderSetupSummary);
   $("#history-search").addEventListener("input", () => {
@@ -1524,6 +1585,10 @@ async function init() {
       historySearchTimer = setTimeout(() => loadHistoryPage(true), 220);
   });
   $("#history-load-more").addEventListener("click", () => loadHistoryPage(false));
+  $("#report-chapter")?.addEventListener("change", (event) => {
+    if (event.target.value)
+      activateReportTab(event.target.value, { focusTab: false });
+  });
   $("#view-final-decision").addEventListener("click", () => {
     if (!state.run?.reports?.final_trade_decision) return;
     activateReportTab("final_trade_decision");
@@ -1643,13 +1708,16 @@ if (typeof module !== "undefined" && module.exports)
     reportTabTarget,
     reportRenderKey,
     reportPlaceholder,
+    runStageText,
     settingsRequestIsCurrent,
     inferAssetType,
     modelChoices,
     CUSTOM_MODEL_VALUE,
     api,
+    startAnalysis,
     selectRun,
     renderReportTabs,
+    renderPipeline,
     state,
   };
 if (typeof document !== "undefined") init();

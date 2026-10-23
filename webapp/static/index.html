@@ -81,9 +81,8 @@
       <section id="workspace-view" class="page">
         <div class="page-heading">
           <div>
-            <div class="eyebrow accent">PRIVATE RESEARCH DESK</div>
-            <h1>证据在前，判断在你<span>。</span></h1>
-            <p>从行情到观点，在一个工作区审阅完整的研究链路。</p>
+            <h1 id="workspace-title">研究工作台</h1>
+            <p id="workspace-description">选择标的，启动研究；结论、来源与过程保存在本机。</p>
           </div>
           <button class="button ghost" id="new-research">
             <span data-icon="plus"></span>新建研究
@@ -144,6 +143,8 @@
               <p id="asset-hint" class="field-help" role="status">
                 输入代码后自动识别标的，无需选择资产类型。
               </p>
+              <details class="research-options" id="research-options">
+                <summary>分析维度与研究深度<span id="research-options-brief">4 个维度 · 1 轮辩论</span></summary>
               <div class="section-label">
                 <label>分析维度</label><span>按需选择</span>
               </div>
@@ -207,6 +208,7 @@
                   <b>深度研究</b><small>3 轮辩论</small>
                 </button>
               </div>
+              </details>
               <div class="model-summary">
                 <div>
                   <span data-icon="cpu"></span
@@ -292,9 +294,12 @@
                     </div>
                     <span id="evidence-status" class="quality-tag">未验证</span>
                   </div>
+                  <details id="evidence-details" class="evidence-details">
+                    <summary>查看来源与覆盖范围</summary>
                   <div id="evidence-meta" class="evidence-meta"></div>
                   <div id="evidence-report-rows" class="evidence-report-rows"></div>
                   <a id="export-evidence" class="evidence-export" hidden>下载证据清单 JSON ↓</a>
+                  </details>
                 </section>
                 <div id="run-error" class="run-error" role="alert" hidden></div>
               </section>
@@ -420,6 +425,10 @@
                 <div class="report-layout">
                   <aside class="report-index">
                     <h3>报告目录</h3>
+                    <div class="report-chapter-picker">
+                      <label for="report-chapter">当前章节</label>
+                      <select id="report-chapter" disabled><option value="">等待报告生成</option></select>
+                    </div>
                     <div
                       id="report-tabs"
                       role="tablist"

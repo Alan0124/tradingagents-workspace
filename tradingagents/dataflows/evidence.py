@@ -16,6 +16,7 @@ import threading
 from concurrent.futures import Future
 from contextlib import contextmanager
 from contextvars import ContextVar
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -212,6 +213,62 @@ class EvidenceLedger:
                    "unknown": "尚无可核验的完整采集记录；不能由报告篇幅推断证据质量。"}[status]
         return {"status": status, "summary": summary, "reports": reports,
                 "evidence_count": len(entries), "as_of": self.as_of}
+
+    def _citation_reason(self, entry):
+        if not set(entry["report_keys"]) & set(self.reports):
+            return "unselected_dimension"
+        if entry["status"] not in {"available", "sparse"}:
+            return "unavailable"
+        if entry["as_of"] != self.as_of:
+            return "wrong_run_date"
+        try:
+            cutoff = datetime.fromisoformat(self.as_of).date()
+            dates = entry.get("observed_dates") or {}
+            start, end = (datetime.fromisoformat(dates[key].replace("Z", "+00:00")).date()
+                          if dates.get(key) else None for key in ("start", "end"))
+        except (ValueError, TypeError, AttributeError, KeyError):
+            return "invalid_dates"
+        if any(day is not None and day > cutoff for day in (start, end)):
+            return "future_dated"
+        if start is not None and end is not None and start > end:
+            return "invalid_dates"
+        return None
+
+    @staticmethod
+    def _citation_metadata(entry):
+        # Never include raw payloads or provider request arguments in the catalog.
+        return deepcopy({key: entry[key] for key in (
+            "id", "source", "status", "as_of", "sample_count", "observed_dates",
+        )})
+
+    def citation_catalog(self, limit=128):
+        """Usable selected receipts; their presence does not verify a claim.
+
+        Unknown coverage dates remain explicit. Known future or malformed
+        coverage ranges cannot support this run.
+        """
+        with self._lock:
+            return [self._citation_metadata(entry) for entry in self._entries.values()
+                    if self._citation_reason(entry) is None][:limit]
+
+    def check_citations(self, evidence_ids):
+        """Resolve references against this run, deduplicating repeated IDs."""
+        accepted, rejected, seen = [], [], set()
+        with self._lock:
+            for evidence_id in evidence_ids:
+                if not isinstance(evidence_id, str) or not re.fullmatch(r"E-[0-9a-f]{16}", evidence_id):
+                    rejected.append({"id": str(evidence_id)[:80], "reason": "invalid_id"})
+                    continue
+                if evidence_id in seen:
+                    continue
+                seen.add(evidence_id)
+                entry = self._entries.get(evidence_id)
+                reason = self._citation_reason(entry) if entry is not None else "unknown_id"
+                if reason:
+                    rejected.append({"id": evidence_id, "reason": reason})
+                else:
+                    accepted.append(self._citation_metadata(entry))
+        return {"accepted": accepted, "rejected": rejected}
 
     def flush(self):
         with self._lock:

@@ -16,10 +16,13 @@ const {
   orderReportKeys,
   reportPlaceholder,
   reportRenderKey,
+  renderPipeline,
   renderReportTabs,
   reportTabTarget,
+  runStageText,
   selectRun,
   settingsRequestIsCurrent,
+  startAnalysis,
   state,
   usageStatus,
 } = require("../static/app.js");
@@ -262,6 +265,63 @@ test("report placeholder follows terminal status and rerenders after status chan
   assert.match(reportPlaceholder(run), /已停止/);
 });
 
+test("stage fallback describes the selected research status rather than a new task", () => {
+  assert.match(runStageText(null), /等待研究任务/);
+  assert.equal(runStageText({ status: "completed" }), "研究完成");
+  assert.equal(runStageText({ status: "failed", stage: "  " }), "分析失败");
+  assert.equal(runStageText({ status: "running" }), "研究进行中");
+  assert.equal(runStageText({ status: "cancelled" }), "已停止");
+  assert.equal(
+    runStageText({ status: "running", stage: "正在核对新闻来源" }),
+    "正在核对新闻来源",
+  );
+});
+
+test("empty analyst selection opens the hidden choices and focuses an available option", async () => {
+  const originalDocument = global.document;
+  const originalFetch = global.fetch;
+  const savedState = {
+    meta: state.meta,
+    provider: state.provider,
+    quick_model: state.quick_model,
+    deep_model: state.deep_model,
+    busy: state.busy,
+  };
+  const error = { textContent: "", hidden: true };
+  const options = { open: false };
+  const focused = [];
+  const analyst = { focus() { focused.push(options.open); } };
+  const fields = {
+    "#form-error": error,
+    "#ticker": { value: "MSFT" },
+    "#analysis-date": { value: "2026-10-23" },
+    "#research-options": options,
+    "input[name=analysts]:not(:disabled)": analyst,
+  };
+  global.document = {
+    querySelector: (selector) => fields[selector],
+    querySelectorAll: () => [],
+  };
+  global.fetch = () => assert.fail("invalid research must not be submitted");
+  try {
+    state.meta = { providers: [{ id: "ollama", key_required: false }] };
+    state.provider = "ollama";
+    state.quick_model = "offline-model";
+    state.deep_model = "offline-model";
+    state.busy = false;
+    await startAnalysis({ preventDefault() {} });
+    assert.equal(error.hidden, false);
+    assert.match(error.textContent, /至少选择一位分析师/);
+    assert.equal(options.open, true);
+    assert.deepEqual(focused, [true]);
+    assert.equal(state.busy, false);
+  } finally {
+    global.document = originalDocument;
+    global.fetch = originalFetch;
+    Object.assign(state, savedState);
+  }
+});
+
 test("an older run selection cannot replace the latest selection", async () => {
   const originalFetch = global.fetch;
   const pending = new Map();
@@ -364,7 +424,7 @@ test("background report refresh never scrolls the page or steals focus", () => {
   };
   global.document = {
     activeElement: { dataset: {} },
-    querySelector: () => tabs,
+    querySelector: (selector) => selector === "#report-tabs" ? tabs : null,
     createElement: () => ({
       dataset: {}, classList: { toggle() {} }, setAttribute() {},
       scrollIntoView() { calls.push("scroll"); },
@@ -388,5 +448,127 @@ test("background report refresh never scrolls the page or steals focus", () => {
     state.meta = originalMeta;
     state.tab = originalTab;
     state.tabSignature = originalSignature;
+  }
+});
+
+test("mobile chapter selection follows desktop tabs without rebuilding during polling", () => {
+  const originalDocument = global.document;
+  const savedState = {
+    meta: state.meta,
+    tab: state.tab,
+    tabSignature: state.tabSignature,
+  };
+  const buttons = [];
+  const options = [];
+  const tabs = {
+    replaceChildren() { buttons.length = 0; },
+    append(button) { buttons.push(button); },
+    querySelectorAll() { return buttons; },
+  };
+  const picker = {
+    disabled: false,
+    value: "",
+    replaceChildren() { options.length = 0; },
+    append(option) { options.push(option); },
+  };
+  const focusCalls = [];
+  global.document = {
+    activeElement: picker,
+    querySelector: (selector) => ({
+      "#report-tabs": tabs,
+      "#report-chapter": picker,
+    })[selector],
+    createElement: () => ({
+      dataset: {},
+      classList: { toggle() {} },
+      setAttribute() {},
+      focus() { focusCalls.push("focus"); },
+    }),
+  };
+  try {
+    state.meta = { labels: {
+      final_trade_decision: "最终结论",
+      market_report: "技术面分析",
+    } };
+    state.tab = undefined;
+    state.tabSignature = null;
+    renderReportTabs([]);
+    assert.equal(picker.disabled, true);
+    assert.equal(options[0].textContent, "等待报告生成");
+
+    state.tab = "final_trade_decision";
+    renderReportTabs(["final_trade_decision", "market_report"]);
+    assert.equal(picker.disabled, false);
+    assert.equal(picker.value, "final_trade_decision");
+    assert.deepEqual(options.map(({ value, textContent }) => [value, textContent]), [
+      ["final_trade_decision", "最终结论"],
+      ["market_report", "技术面分析"],
+    ]);
+    const firstOption = options[0];
+    const firstTab = buttons[0];
+    state.tab = "market_report";
+    renderReportTabs(["final_trade_decision", "market_report"]);
+    assert.equal(picker.value, "market_report");
+    assert.equal(options[0], firstOption);
+    assert.equal(buttons[0], firstTab);
+    assert.equal(global.document.activeElement, picker);
+    assert.deepEqual(focusCalls, []);
+
+    state.meta.labels.market_report = "市场分析";
+    renderReportTabs(["final_trade_decision", "market_report"]);
+    assert.equal(options[1].textContent, "市场分析");
+    assert.equal(picker.value, "market_report");
+    assert.deepEqual(focusCalls, []);
+  } finally {
+    global.document = originalDocument;
+    Object.assign(state, savedState);
+  }
+});
+
+test("pipeline rows keep their identity as polling advances the current stage", () => {
+  const originalDocument = global.document;
+  const originalRun = state.run;
+  function element() {
+    return {
+      children: [],
+      textContent: "",
+      innerHTML: "",
+      append(...children) { this.children.push(...children); },
+      replaceChildren() { this.children.length = 0; },
+    };
+  }
+  const pipeline = element();
+  global.document = {
+    querySelector: () => pipeline,
+    createElement: element,
+  };
+  try {
+    state.run = {
+      status: "running",
+      config: { analysts: ["market"] },
+      reports: {},
+    };
+    renderPipeline();
+    const rows = [...pipeline.children];
+    assert.match(rows[0].className, /current/);
+    assert.equal(rows[0].children[2].textContent, "正在进行");
+    renderPipeline();
+    rows.forEach((row, index) => assert.equal(pipeline.children[index], row));
+
+    state.run.reports.market_report = "Market report";
+    renderPipeline();
+    rows.forEach((row, index) => assert.equal(pipeline.children[index], row));
+    assert.match(rows[0].className, /done/);
+    assert.equal(rows[0].children[2].textContent, "已完成");
+    assert.match(rows[1].className, /current/);
+    assert.equal(rows[1].children[2].textContent, "正在进行");
+
+    state.run.status = "failed";
+    renderPipeline();
+    assert.doesNotMatch(rows[1].className, /current/);
+    assert.equal(rows[1].children[2].textContent, "交叉论据验证");
+  } finally {
+    global.document = originalDocument;
+    state.run = originalRun;
   }
 });

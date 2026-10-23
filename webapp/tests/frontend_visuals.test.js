@@ -1,7 +1,9 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const test = require("node:test");
+const vm = require("node:vm");
 const {
   buildCoverageItems,
   buildEvidenceItems,
@@ -14,6 +16,65 @@ const {
   qualityStatusLabel,
   usageSummary,
 } = require("../static/visuals.js");
+
+test("chart labels stay in HTML while loaded market data retains its source", async () => {
+  const elements = new Map(
+    ["#market-chart", "#market-chart-source", "#coverage-chart", "#usage-chart"]
+      .map((id) => [id, { innerHTML: "", textContent: "" }]),
+  );
+  let loadMarket;
+  elements.set("#load-market-chart", {
+    addEventListener(event, handler) {
+      assert.equal(event, "click");
+      loadMarket = handler;
+    },
+  });
+  const window = {};
+  const context = vm.createContext({
+    window,
+    document: { querySelector: (selector) => elements.get(selector) || null },
+    fetch: async () => ({
+      ok: true,
+      json: async () => ({
+        symbol: "TEST",
+        as_of: "2026-01-03",
+        source: "Saved production source",
+        price_basis: "saved close",
+        currency: "USD",
+        series: [
+          { date: "2026-01-01", close: 10 },
+          { date: "2026-01-03", close: 12 },
+        ],
+      }),
+    }),
+  });
+  vm.runInContext(fs.readFileSync(require.resolve("../static/visuals.js"), "utf8"), context);
+  window.TradingVisuals.render({
+    run: {
+      id: "test-run",
+      config: { ticker: "TEST", date: "2026-01-03", analysts: ["market", "news"] },
+      reports: { market_report: "Completed technical report" },
+      stats: { tokens_in: 1250, tokens_out: 0, usage_complete: true },
+    },
+  });
+
+  const coverage = elements.get("#coverage-chart").innerHTML;
+  const usage = elements.get("#usage-chart").innerHTML;
+  assert.match(coverage, /role="list"/);
+  assert.match(coverage, /技术面分析<\/span><span>已完成/);
+  assert.match(coverage, /新闻分析<\/span><span>待生成/);
+  assert.match(usage, /输入 Token<\/span><span>1,250/);
+  assert.match(usage, /输出 Token<\/span><span>0/);
+  assert.doesNotMatch(coverage + usage, /<svg|<text/);
+
+  await loadMarket();
+  const market = elements.get("#market-chart").innerHTML;
+  assert.match(market, /<svg[^>]+role="img"/);
+  assert.match(market, /class="market-y-axis"[^>]*><span>US\$12\.00/);
+  assert.match(market, /class="market-dates"[^>]*><span>2026-01-01<\/span><span>2026-01-03/);
+  assert.doesNotMatch(market, /<text/);
+  assert.match(elements.get("#market-chart-source").textContent, /^Saved production source · TEST · saved close/);
+});
 
 test("market series is date sorted, bounded by as-of, and drops invalid closes", () => {
   const points = prepareMarketSeries(

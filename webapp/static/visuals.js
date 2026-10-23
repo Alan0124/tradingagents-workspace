@@ -313,6 +313,8 @@
         const sourceRows = item.sources
           .map((source) => {
             const parts = [];
+            if (typeof source.id === "string" && /^E-[0-9a-f]{16}$/.test(source.id))
+              parts.push(`证据：${escapeHtml(source.id)}`);
             if (typeof source.source === "string" && source.source.trim())
               parts.push(`来源：${escapeHtml(source.source.trim())}`);
             if (
@@ -358,17 +360,14 @@
       return;
     }
     const completeCount = items.filter((item) => item.complete).length;
-    const height = 38 + items.length * 34;
     const rows = items
-      .map((item, index) => {
-        const y = 46 + index * 34;
+      .map((item) => {
         const status = item.complete ? "已完成" : "待生成";
-        const fill = item.complete ? 176 : 0;
-        const color = item.complete ? "#cbb58c" : "#586779";
-        return `<g><text x="8" y="${y + 4}">${escapeHtml(item.label)}</text><rect x="150" y="${y - 8}" width="176" height="10" rx="5" fill="#373635"/><rect x="150" y="${y - 8}" width="${fill}" height="10" rx="5" fill="${color}"/><text x="342" y="${y + 4}">${status}</text></g>`;
+        const width = item.complete ? 100 : 0;
+        return `<div class="chart-bar-row" role="listitem"><div class="chart-bar-labels"><span>${escapeHtml(item.label)}</span><span>${status}</span></div><div class="chart-bar-track" aria-hidden="true"><span style="width:${width}%"></span></div></div>`;
       })
       .join("");
-    el.innerHTML = `<svg viewBox="0 0 410 ${height}" role="img" aria-labelledby="coverage-title coverage-desc" preserveAspectRatio="xMinYMin meet"><title id="coverage-title">研究覆盖：${completeCount} / ${items.length} 个已选分析维度完成</title><desc id="coverage-desc">${items.map((item) => `${item.label}${item.complete ? "已完成" : "待生成"}`).join("，")}</desc><text x="8" y="20">已完成 ${completeCount} / ${items.length} 个已选维度</text>${rows}</svg>`;
+    el.innerHTML = `<p class="chart-bar-summary">已完成 ${completeCount} / ${items.length} 个已选维度</p><div class="chart-bars" role="list" aria-label="所选研究维度的报告完成情况">${rows}</div>`;
   }
 
   function renderUsage(run) {
@@ -387,19 +386,16 @@
       .map((item) => item.value);
     const maxValue = Math.max(...knownValues, 1);
     const rows = items
-      .map((item, index) => {
-        const y = 40 + index * 43;
-        if (!item.available) {
-          return `<g><text x="8" y="${y + 4}">${item.label}</text><text x="154" y="${y + 4}">暂无数据</text></g>`;
-        }
-        const barWidth = (item.value / maxValue) * 220;
-        return `<g><text x="8" y="${y + 4}">${item.label}</text><rect x="116" y="${y - 8}" width="220" height="12" rx="6" fill="#373635"/><rect x="116" y="${y - 8}" width="${barWidth.toFixed(2)}" height="12" rx="6" fill="${item.color}"/><text x="350" y="${y + 4}">${countText(item.value)}</text></g>`;
+      .map((item) => {
+        const value = item.available ? countText(item.value) : "暂无数据";
+        const width = item.available ? (item.value / maxValue) * 100 : 0;
+        return `<div class="chart-bar-row" role="listitem"><div class="chart-bar-labels"><span>${escapeHtml(item.label)}</span><span>${escapeHtml(value)}</span></div><div class="chart-bar-track" aria-hidden="true"><span style="width:${width.toFixed(2)}%;background:${item.color}"></span></div></div>`;
       })
       .join("");
     const note = ["partial", "unknown"].includes(summary.state)
       ? `<p class="usage-note">${escapeHtml(summary.label)}</p>`
       : "";
-    el.innerHTML = `${note}<svg viewBox="0 0 430 126" role="img" aria-labelledby="usage-title usage-desc" preserveAspectRatio="xMinYMin meet"><title id="usage-title">模型实际 token 用量</title><desc id="usage-desc">${items.map((item) => `${item.label}：${item.available ? countText(item.value) : "暂无数据"}`).join("；")}；${escapeHtml(summary.label)}</desc>${rows}</svg>`;
+    el.innerHTML = `${note}<div class="chart-bars" role="list" aria-label="模型实际 Token 用量">${rows}</div>`;
   }
 
   function renderMarket(data, run) {
@@ -431,7 +427,7 @@
     const grid = geometry.yTicks
       .map(
         (tick) =>
-          `<g><line x1="${geometry.plot.left}" x2="${geometry.width - geometry.plot.right}" y1="${tick.y.toFixed(2)}" y2="${tick.y.toFixed(2)}" stroke="#3b3935" stroke-dasharray="3 5"/><text x="${geometry.plot.left - 8}" y="${(tick.y + 4).toFixed(2)}" text-anchor="end">${escapeHtml(priceText(tick.value, currency))}</text></g>`,
+          `<line x1="${geometry.plot.left}" x2="${geometry.width - geometry.plot.right}" y1="${tick.y.toFixed(2)}" y2="${tick.y.toFixed(2)}" stroke="#3b3935" stroke-dasharray="3 5"/>`,
       )
       .join("");
     const markers = geometry.points
@@ -445,7 +441,12 @@
     const min = Math.min(...points.map((point) => point.close));
     const max = Math.max(...points.map((point) => point.close));
     const desc = `${symbol} 截至 ${asOf} 共 ${points.length} 个交易日；最低收盘价 ${priceText(min, currency)}，最高收盘价 ${priceText(max, currency)}。`;
-    el.innerHTML = `<svg viewBox="0 0 ${geometry.width} ${geometry.height}" role="img" aria-labelledby="market-title market-desc" preserveAspectRatio="none"><title id="market-title">${escapeHtml(symbol)} 历史收盘价</title><desc id="market-desc">${escapeHtml(desc)}</desc>${grid}<path d="${path}" fill="none" stroke="#cbb58c" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>${markers}<text x="${geometry.plot.left}" y="${geometry.height - 10}">${escapeHtml(first.date)}</text><text x="${geometry.width - geometry.plot.right}" y="${geometry.height - 10}" text-anchor="end">${escapeHtml(last.date)}</text></svg><p class="chart-summary">${escapeHtml(desc)}</p>`;
+    const plotWidth = geometry.width - geometry.plot.left - geometry.plot.right;
+    const plotHeight = geometry.height - geometry.plot.top - geometry.plot.bottom;
+    const axisLabels = geometry.yTicks
+      .map((tick) => `<span>${escapeHtml(priceText(tick.value, currency))}</span>`)
+      .join("");
+    el.innerHTML = `<div class="market-chart-grid"><div class="market-y-axis" aria-hidden="true">${axisLabels}</div><div class="market-plot"><svg viewBox="${geometry.plot.left} ${geometry.plot.top} ${plotWidth} ${plotHeight}" role="img" aria-labelledby="market-title market-desc" preserveAspectRatio="none"><title id="market-title">${escapeHtml(symbol)} 历史收盘价</title><desc id="market-desc">${escapeHtml(desc)} 日期范围 ${escapeHtml(first.date)} 至 ${escapeHtml(last.date)}。</desc>${grid}<path d="${path}" fill="none" stroke="#cbb58c" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>${markers}</svg></div><div class="market-dates" aria-hidden="true"><span>${escapeHtml(first.date)}</span><span>${escapeHtml(last.date)}</span></div></div><p class="chart-summary">${escapeHtml(desc)}</p>`;
   }
 
   function setMarketState(message, kind = "") {

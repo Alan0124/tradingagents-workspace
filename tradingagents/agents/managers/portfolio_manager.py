@@ -17,6 +17,11 @@ from tradingagents.agents.context import (
     get_language_instruction,
     get_portfolio_context_from_state,
 )
+from tradingagents.agents.decision_evidence import (
+    audit_decision_evidence,
+    audit_free_text_evidence,
+    citation_instruction,
+)
 from tradingagents.agents.rating import parse_rating
 from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
 from tradingagents.agents.structured import NO_EXTERNAL_TOOLS, bind_structured, invoke_structured
@@ -50,9 +55,9 @@ def create_portfolio_manager(llm):
 
     def portfolio_manager_node(state) -> dict:
         ledger = current_ledger()
+        chinese = "chinese" in get_config().get("output_language", "English").lower()
         # An empty ledger is unknown, not unavailable. Neither can support a rating.
-        if ledger is not None and ledger.quality()["status"] not in {"available", "sparse"}:
-            chinese = "chinese" in get_config().get("output_language", "English").lower()
+        if ledger is not None and not ledger.citation_catalog():
             report = (
                 "**Rating**: REVIEW\n\n资料不足，暂不评级。\n\n"
                 "所选分析维度没有可核验的有效数据，不能据此给出买卖方向、情绪分数或目标价。"
@@ -115,17 +120,22 @@ Write these sections, in this order, starting with the rating on its own line:
 - **Executive Summary**: the call and how to act on it
 - **Investment Thesis**: the evidence that decided it, and what would change it
 
+{citation_instruction(ledger)}
 {NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
 
         # The typed rating is the decision; the rendered text only carries it.
         # Read back from text, a rating the thesis quotes could replace it.
         decision = invoke_structured(structured_llm, prompt, "Portfolio Manager")
         if decision is not None:
+            decision, evidence_note = audit_decision_evidence(decision, ledger, chinese=chinese)
             final_trade_decision = omit_unavailable_price_target(render_pm_decision(decision))
+            if evidence_note:
+                final_trade_decision += "\n\n" + evidence_note
             final_rating = decision.rating.value
         else:
             final_trade_decision = omit_unavailable_price_target(llm.invoke(prompt).content)
             final_rating = parse_rating(final_trade_decision)
+            final_trade_decision = audit_free_text_evidence(final_trade_decision, ledger, chinese=chinese)
 
         new_risk_debate_state = {
             "history": risk_debate_state["history"],

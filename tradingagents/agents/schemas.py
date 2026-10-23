@@ -21,7 +21,7 @@ from __future__ import annotations
 import math
 import re
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -277,6 +277,19 @@ def render_trader_proposal(proposal: TraderProposal) -> str:
 # ---------------------------------------------------------------------------
 
 
+EvidenceId = Annotated[str, Field(max_length=80)]
+
+
+class DecisionEvidenceClaim(BaseModel):
+    """A model's claim and its receipt references, checked after generation."""
+
+    text: str = Field(min_length=1, max_length=2000, description="One concrete claim supporting the decision.")
+    evidence_ids: list[EvidenceId] = Field(
+        default_factory=list, max_length=16,
+        description="Exact IDs from this run's evidence catalog; use [] when unsupported. Never invent IDs.",
+    )
+
+
 class PortfolioDecision(BaseModel):
     """Structured output produced by the Portfolio Manager.
 
@@ -323,11 +336,29 @@ class PortfolioDecision(BaseModel):
         default=None,
         description="Optional recommended holding period, e.g. '3-6 months'.",
     )
+    evidence_claims: list[DecisionEvidenceClaim] = Field(
+        default_factory=list, max_length=12,
+        description="Key decision claims with their exact supporting receipt IDs from the evidence catalog.",
+    )
+    price_target_basis: str | None = Field(
+        default=None, max_length=4000,
+        description=("Explain the valuation method, inputs, currency, period and assumptions behind the target. "
+                     "This is a model explanation, not independent numerical verification. Return null if unsupported."),
+    )
+    price_target_evidence_ids: list[EvidenceId] = Field(
+        default_factory=list, max_length=16,
+        description="Exact usable receipt IDs supporting the target's inputs; no IDs means no traceable target.",
+    )
 
     @field_validator("price_target", mode="before")
     @classmethod
     def _nullish_float_to_none(cls, v):
         return _coerce_optional_float(v)
+
+    @field_validator("price_target")
+    @classmethod
+    def _positive_target(cls, value):
+        return value if value is None or math.isfinite(value) and value > 0 else None
 
 
 def render_pm_decision(decision: PortfolioDecision) -> str:
