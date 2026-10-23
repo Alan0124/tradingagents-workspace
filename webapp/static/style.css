@@ -3644,3 +3644,39 @@ h2 {
     column-gap: 8px;
   }
 }
+
+/* Reading sources uses the workspace's existing palette and typography. */
+.markdown-body .report-source-link {
+  font-family: var(--font);
+  font-size: .86em;
+  text-underline-offset: 3px;
+}
+.source-page {
+  width: min(100%, 960px);
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+.source-page header {
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--line);
+}
+.source-page h1 {
+  margin: 24px 0 16px;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 400;
+}
+.source-page header p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.8;
+}
+.source-page .markdown-body {
+  padding: 24px 0;
+}
+.source-page header > a {
+  color: var(--ice);
+  font-size: 13px;
+  text-underline-offset: 3px;
+}

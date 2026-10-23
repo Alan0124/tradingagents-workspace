@@ -880,26 +880,6 @@ def _evidence_export(run):
         if not report["sources"]:
             lines.append("  - 来源：无采集记录。")
             continue
-        for source in report["sources"]:
-            dates = source["observed_dates"]
-            start = _markdown_metadata(dates.get("start") or "未提供")
-            end = _markdown_metadata(dates.get("end") or "未提供")
-            sample_count = (
-                str(source["sample_count"])
-                if source["sample_count"] is not None
-                else "未报告"
-            )
-            lines.append(
-                "  - 来源：{source}；证据 ID：{evidence_id}；样本数：{count}；"
-                "观察日期：{start} 至 {end}；覆盖说明：{caveat}。".format(
-                    source=_markdown_metadata(source["source"]),
-                    evidence_id=_markdown_metadata(source["id"] or "未提供"),
-                    count=sample_count,
-                    start=start,
-                    end=end,
-                    caveat=_markdown_metadata(source["coverage_caveat"] or "未提供"),
-                )
-            )
     return "\n".join(lines)
 
 
@@ -917,17 +897,19 @@ def document(run):
     )
     for key, label in LABELS.items():
         if run["reports"].get(key):
-            text += f"## {label}\n\n{display_report(key, run['reports'][key])}\n\n"
+            text += f"## {label}\n\n{display_report(key, run['reports'][key], run)}\n\n"
     return text
 
 
-def display_report(key, text):
+def display_report(key, text, run=None):
     """Hide legacy optional placeholders on output, retaining the stored original."""
     if key == "final_trade_decision":
         from tradingagents.agents.managers.portfolio_manager import omit_unavailable_price_target
 
-        return omit_unavailable_price_target(text)
-    return text
+        text = omit_unavailable_price_target(text)
+    from webapp.report_sources import readable_report
+
+    return readable_report(text, run)
 
 
 def report_html(run):

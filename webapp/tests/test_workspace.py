@@ -536,13 +536,9 @@ emit('result',rating='Hold')
         self.assertIn("最终评级：资料不足·暂不评级", markdown)
         self.assertIn("整体状态：资料不足", markdown)
         self.assertIn("技术面分析：资料不足", markdown)
-        self.assertIn("证据 ID：E\\-1234", markdown)
-        self.assertIn("样本数：0", markdown)
-        self.assertIn("观察日期：2026\\-09\\-01 至 2026\\-09\\-02", markdown)
-        self.assertIn(
-            "覆盖说明：\\<script\\>alert\\(1\\)\\</script\\> \\# injected",
-            markdown,
-        )
+        self.assertNotIn("证据 ID", markdown)
+        self.assertNotIn("样本数", markdown)
+        self.assertNotIn("观察日期", markdown)
         self.assertNotIn("[click](https://evil.example)", markdown)
         self.assertNotIn('href="https://evil.example', html)
         self.assertNotIn("<script>alert(1)</script>", html)

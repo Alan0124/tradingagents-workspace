@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import mimetypes
+import re
 import secrets
 import subprocess
 import sys
@@ -27,7 +28,6 @@ from webapp.core import (
     InstanceLock,
     Manager,
     Store,
-    display_report,
     document,
     metadata,
     redact,
@@ -36,6 +36,7 @@ from webapp.core import (
     save_settings,
 )
 from webapp.market import get_market_history
+from webapp.report_sources import render_report, source_page
 
 STATIC = Path(__file__).parent / "static"
 
@@ -206,16 +207,24 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) in (3, 4) and parts[:2] == ["api", "runs"]:
             run = self.server.manager.store.get(parts[2])
             if len(parts) == 3:
+                directory = self.server.manager.store.root / "runs" / parts[2]
+                archive = directory / "evidence.json"
+                sources_available = (
+                    bool(re.fullmatch(r"[0-9a-f]{32}", parts[2]))
+                    and not directory.is_symlink()
+                    and archive.is_file() and not archive.is_symlink()
+                )
                 return self.send(
                     {
                         **run,
                         "rendered": {
-                            k: MD.render(display_report(k, v)) for k, v in run["reports"].items()
+                            k: render_report(run, k, v, MD, sources_available=sources_available)
+                            for k, v in run["reports"].items()
                         },
                     }
                 )
             ext = parts[3]
-            if ext in {"market", "evidence.json"}:
+            if ext in {"market", "evidence.json", "evidence.html"}:
                 run_root = (self.server.manager.store.root / "runs").resolve()
                 candidate_directory = run_root / parts[2]
                 if candidate_directory.is_symlink():
@@ -250,10 +259,19 @@ class Handler(BaseHTTPRequestHandler):
                     content_type="text/html; charset=utf-8",
                     disposition=f'attachment; filename="{run["config"]["ticker"]}-{run["config"]["date"]}.html"',
                 )
-            if ext == "evidence.json":
+            if ext in {"evidence.json", "evidence.html"}:
                 evidence_path = run_directory / "evidence.json"
                 if not evidence_path.is_file() or evidence_path.is_symlink():
                     raise KeyError("未找到证据文件。")
+                if ext == "evidence.html":
+                    source_ids = parse_qs(parsed_url.query).get("source", [])
+                    if len(source_ids) != 1 or not re.fullmatch(r"E-[0-9a-f]{16}", source_ids[0]):
+                        raise KeyError("未找到来源快照。")
+                    saved = json.loads(evidence_path.read_text(encoding="utf-8"))
+                    entry = next((e for e in saved.get("evidence", []) if e.get("id") == source_ids[0]), None)
+                    if entry is None:
+                        raise KeyError("未找到来源快照。")
+                    return self.send(source_page(entry, run), content_type="text/html; charset=utf-8")
                 return self.send(
                     evidence_path.read_bytes(),
                     content_type="application/json; charset=utf-8",

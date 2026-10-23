@@ -642,6 +642,7 @@ function reportRenderKey(run, tab) {
     run?.status || "",
     tab || "",
     run?.reports?.[tab] || "",
+    run?.rendered?.[tab] || "",
   ]);
 }
 function reportPlaceholder(run) {
@@ -707,7 +708,10 @@ function decisionSummary(run) {
     const template = document.createElement("template");
     template.innerHTML = rendered;
     const paragraphs = [...template.content.querySelectorAll("h1,h2,h3,p")].map(
-      (node) => node.textContent.trim(),
+      (node) => {
+        (node.querySelectorAll?.(".report-source-link") || []).forEach((link) => link.remove());
+        return node.textContent.replace(/（\s*[；;\s]*）|\(\s*[；;\s]*\)/g, "").trim();
+      },
     );
     const paragraph = summaryCandidate(paragraphs);
     if (paragraph) return paragraph.slice(0, 420).trimEnd() + (paragraph.length > 420 ? "…" : "");
@@ -1033,14 +1037,6 @@ function renderRun() {
   finalButton.hidden = !hasFinalDecision;
   $("#research-overview").hidden = !run;
   $("#research-visuals").hidden = !run;
-  const evidenceExport = $("#export-evidence");
-  const evidenceCount = run?.quality?.evidence_count;
-  evidenceExport.hidden =
-    !Number.isSafeInteger(evidenceCount) || evidenceCount <= 0;
-  if (!evidenceExport.hidden) {
-    evidenceExport.href = `/api/runs/${encodeURIComponent(run.id)}/evidence.json`;
-    evidenceExport.download = `${run.config.ticker}-${run.config.date}-evidence.json`;
-  }
   const reuse = $("#reuse-run");
   if (reuse) {
     reuse.hidden = !run || active(run);
@@ -1072,6 +1068,7 @@ function renderRun() {
       error.append(resume);
     }
   }
+  $(".report-summary-panel").hidden = !hasFinalDecision && error.hidden;
   const keys = orderReportKeys(
     Object.keys(state.meta?.labels || {}).filter((k) => reportData[k]),
   );
@@ -1090,7 +1087,7 @@ function renderRun() {
     if (run?.rendered?.[state.tab]) {
       article.innerHTML = run.rendered[state.tab];
       article.querySelectorAll("a").forEach((a) => {
-        a.target = "_blank";
+        a.target = a.classList.contains("report-source-link") ? "_self" : "_blank";
         a.rel = "noopener noreferrer";
       });
     } else {

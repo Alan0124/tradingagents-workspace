@@ -278,75 +278,6 @@
     return `<p class="chart-empty-state${kind ? ` ${kind}` : ""}" role="status">${escapeHtml(message)}</p>`;
   }
 
-  function renderQuality(run, labels) {
-    const panel = document.querySelector("#evidence-quality");
-    if (!panel) return;
-    const summary = buildQualitySummary(run);
-    const status = document.querySelector("#evidence-status");
-    if (status) {
-      status.textContent = summary.label;
-      status.className = `quality-tag quality-${summary.status}`;
-    }
-    const summaryEl = document.querySelector("#evidence-summary");
-    if (summaryEl) summaryEl.textContent = summary.summary;
-    const meta = document.querySelector("#evidence-meta");
-    if (meta) {
-      const details = [];
-      if (summary.evidenceCount !== null)
-        details.push(`${countText(summary.evidenceCount)} 条证据记录`);
-      if (summary.asOf) details.push(`数据日期 ${summary.asOf}`);
-      meta.textContent = details.join(" · ");
-      meta.hidden = details.length === 0;
-    }
-
-    const rows = document.querySelector("#evidence-report-rows");
-    if (!rows) return;
-    const items = buildEvidenceItems(run, labels);
-    const html = items
-      .map((item) => {
-        const generation =
-          item.generation === "generated"
-            ? "已生成"
-            : item.generation === "generating"
-              ? "生成中"
-              : "未生成";
-        const sourceRows = item.sources
-          .map((source) => {
-            const parts = [];
-            if (typeof source.id === "string" && /^E-[0-9a-f]{16}$/.test(source.id))
-              parts.push(`证据：${escapeHtml(source.id)}`);
-            if (typeof source.source === "string" && source.source.trim())
-              parts.push(`来源：${escapeHtml(source.source.trim())}`);
-            if (
-              typeof source.sample_count === "number" &&
-              Number.isSafeInteger(source.sample_count) &&
-              source.sample_count >= 0
-            )
-              parts.push(`样本：${countText(source.sample_count)}`);
-            const dates = source.observed_dates || {};
-            if (dates.start || dates.end)
-              parts.push(
-                `覆盖日期：${escapeHtml(dates.start || "未知")} 至 ${escapeHtml(dates.end || "未知")}`,
-              );
-            const coverage =
-              typeof source.coverage_caveat === "string"
-                ? source.coverage_caveat.trim()
-                : "";
-            return `${parts.length ? `<p class="evidence-sources">${parts.join(" · ")}</p>` : ""}${coverage ? `<p>${escapeHtml(coverage)}</p>` : ""}`;
-          })
-          .join("");
-        const note = item.note ? `<p>${escapeHtml(item.note)}</p>` : "";
-        const noSource =
-          !sourceRows && !note
-            ? '<p>未提供逐来源信息。</p>'
-            : "";
-        return `<section class="evidence-report-row"><div class="evidence-report-heading"><b>${escapeHtml(item.label)}</b><span class="generation-state">${generation} · ${qualityStatusLabel(item.status)}</span></div>${sourceRows}${note}${noSource}</section>`;
-      })
-      .join("");
-    if (rows.innerHTML !== html) rows.innerHTML = html;
-    rows.hidden = items.length === 0;
-  }
-
   function renderCoverage(run, labels) {
     const el = document.querySelector("#coverage-chart");
     if (!el) return;
@@ -521,7 +452,6 @@
         void runs;
         selectedRun = run && typeof run === "object" ? run : null;
         labels = nextLabels && typeof nextLabels === "object" ? nextLabels : {};
-        renderQuality(selectedRun, labels);
         const nextRunId = selectedRun?.id || null;
         const selectionChanged = nextRunId !== selectedRunId;
         if (selectionChanged) {
