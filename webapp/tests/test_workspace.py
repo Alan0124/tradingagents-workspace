@@ -592,6 +592,7 @@ emit('result',rating='Hold')
                 self.assertIn(f"整体状态：{label}", markdown)
                 self.assertIn(f"技术面分析：{label}", markdown)
 
+    @patch("webapp.instruments.instrument_name", new=lambda ticker: ticker)
     def test_http_origin_token_host_and_export(self):
         self.manager = Manager(self.store)
         server = Server(("127.0.0.1", 0), self.manager)

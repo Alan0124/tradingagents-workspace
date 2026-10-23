@@ -300,6 +300,19 @@ nav {
   color: #898783;
   font-size: 12px;
 }
+.instrument-code {
+  margin-left: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.recent-item > span:not(.symbol-dot) {
+  min-width: 0;
+}
+.recent-item b {
+  overflow-wrap: anywhere;
+}
 .recent-item > i {
   width: 6px;
   height: 6px;

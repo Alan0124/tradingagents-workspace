@@ -4,6 +4,7 @@ import json
 import re
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from urllib.parse import urlencode
 
@@ -55,3 +56,32 @@ def _display_name(ticker, day):
 def instrument_name(ticker):
     """Use exact code AND exchange matches, falling back safely when offline."""
     return _display_name(ticker.upper(), int(time.time() // 86400))
+
+
+def named_summaries(store, **params):
+    """Enrich compact lists and index names for searching across all pages."""
+    page = store.summaries(**params)
+    items = page["items"] if isinstance(page, dict) else page
+    tickers = {run["config"]["ticker"] for run in items}
+    with store.lock, store.db() as db:
+        if re.search(r"[\u3400-\u9fff]", params.get("query", "")):
+            tickers.update(row[0] for row in db.execute(
+                "SELECT DISTINCT json_extract(summary_json, '$.config.ticker') FROM runs"
+            ) if row[0])
+        cached = {row[0] for row in db.execute(
+            "SELECT ticker FROM instrument_names WHERE updated_at>=?", (int(time.time() // 86400) * 86400,)
+        )}
+    missing = sorted(tickers - cached)
+    if missing:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            names = list(pool.map(instrument_name, missing))
+        with store.lock, store.db() as db:
+            db.executemany(
+                "INSERT INTO instrument_names(ticker, name, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(ticker) DO UPDATE SET "
+                "name=CASE WHEN excluded.name=excluded.ticker THEN instrument_names.name "
+                "ELSE excluded.name END, updated_at=excluded.updated_at",
+                [(ticker, name, time.time()) for ticker, name in zip(missing, names, strict=True)],
+            )
+        page = store.summaries(**params)
+    return page

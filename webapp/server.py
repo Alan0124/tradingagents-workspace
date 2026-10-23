@@ -35,7 +35,7 @@ from webapp.core import (
     report_html,
     save_settings,
 )
-from webapp.instruments import instrument_name
+from webapp.instruments import instrument_name, named_summaries
 from webapp.market import get_market_history
 from webapp.report_sources import render_report, source_page
 
@@ -149,7 +149,7 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     **metadata(),
                     "token": self.server.token,
-                    "runs": self.server.manager.store.summaries(limit=5),
+                    "runs": named_summaries(self.server.manager.store, limit=5),
                 }
             )
         if path == "/api/models":
@@ -185,7 +185,8 @@ class Handler(BaseHTTPRequestHandler):
                     if cursor in ("", "first"):
                         cursor = None
                     return self.send(
-                        self.server.manager.store.summaries(
+                        named_summaries(
+                            self.server.manager.store,
                             limit=limit,
                             cursor=cursor,
                             query=search,
@@ -193,7 +194,8 @@ class Handler(BaseHTTPRequestHandler):
                         )
                     )
                 return self.send(
-                    self.server.manager.store.summaries(
+                    named_summaries(
+                        self.server.manager.store,
                         limit=limit,
                         offset=offset,
                         query=search,

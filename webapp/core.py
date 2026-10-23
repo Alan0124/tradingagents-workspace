@@ -557,6 +557,10 @@ class Store:
                 )
             db.execute("CREATE INDEX IF NOT EXISTS runs_status_idx ON runs(status)")
             db.execute("CREATE INDEX IF NOT EXISTS runs_created_idx ON runs(created_at DESC, id DESC)")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS instrument_names ("
+                "ticker TEXT PRIMARY KEY, name TEXT NOT NULL, updated_at REAL NOT NULL)"
+            )
         self.path.chmod(0o600)
 
     @contextmanager
@@ -600,8 +604,10 @@ class Store:
         base_where = ""
         base_params = []
         if query:
-            base_where = "WHERE lower(summary_json) LIKE ?"
-            base_params.append(f"%{query}%")
+            base_where = "WHERE (lower(summary_json) LIKE ? OR lower(n.name) LIKE ?)"
+            base_params.extend((f"%{query}%", f"%{query}%"))
+        source = ("runs LEFT JOIN instrument_names n "
+                  "ON n.ticker=json_extract(runs.summary_json, '$.config.ticker')")
         where = base_where
         params = list(base_params)
         key = None
@@ -624,13 +630,14 @@ class Store:
                     where += (" AND " if where else "WHERE ") + keyset
                     params.extend((key[0], key[0], key[1]))
                 rows = db.execute(
-                    f"SELECT summary_json, created_at, id FROM runs {where} "
+                    f"SELECT summary_json, created_at, id, n.name FROM {source} {where} "
                     "ORDER BY created_at DESC, id DESC LIMIT ?",
                     (*params, limit + 1),
                 ).fetchall()
                 has_more = len(rows) > limit
                 rows = rows[:limit]
-                items = [json.loads(row[0]) for row in rows]
+                items = [{**json.loads(row[0]), **({"display_name": row[3]} if row[3] else {})}
+                         for row in rows]
                 next_cursor = None
                 if has_more and rows:
                     timestamp, run_id = rows[-1][1], rows[-1][2]
@@ -638,7 +645,7 @@ class Store:
                         f"{timestamp:.17g}\n{run_id}".encode()
                     ).decode().rstrip("=")
                 total = db.execute(
-                    f"SELECT COUNT(*) FROM runs {base_where}",
+                    f"SELECT COUNT(*) FROM {source} {base_where}",
                     base_params,
                 ).fetchone()[0]
                 return {
@@ -648,10 +655,12 @@ class Store:
                     "total": total,
                 }
             rows = db.execute(
-                f"SELECT summary_json FROM runs {where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                f"SELECT summary_json, n.name FROM {source} {where} "
+                "ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                 (*params, limit, offset),
             ).fetchall()
-        return [json.loads(row[0]) for row in rows]
+        return [{**json.loads(row[0]), **({"display_name": row[1]} if row[1] else {})}
+                for row in rows]
 
     def get(self, run_id):
         with self.lock, self.db() as db:

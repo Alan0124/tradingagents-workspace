@@ -1206,7 +1206,7 @@ async function resumeRun(event) {
 let recentKey = "";
 function renderRecents() {
   const key = JSON.stringify([
-    state.runs.map((r) => [r.id, r.status]),
+    state.runs.map((r) => [r.id, r.status, r.display_name, r.config.ticker]),
     state.run?.id || "",
     state.historyQuery ? null : state.historyTotal,
   ]);
@@ -1222,6 +1222,7 @@ function renderRecents() {
     count === null ? `最近 ${state.runs.length} 份` : `${number(count)} 份`,
   );
   const holder = $("#recent-runs");
+  const focusedRunId = document.activeElement?.closest?.(".recent-item")?.dataset.runId;
   holder.replaceChildren();
   if (!state.runs.length) {
     const p = document.createElement("p");
@@ -1233,13 +1234,22 @@ function renderRecents() {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "recent-item";
+    b.dataset.runId = run.id;
     if (state.run?.id === run.id) b.setAttribute("aria-current", "page");
     const mark = document.createElement("span");
     mark.className = "symbol-dot";
-    mark.textContent = run.config.ticker.slice(0, 2);
+    mark.setAttribute("aria-hidden", "true");
+    const name = run.display_name || run.config.ticker;
+    mark.textContent = name.slice(0, 2);
     const info = document.createElement("span");
     const title = document.createElement("b");
-    title.textContent = run.config.ticker;
+    title.textContent = name;
+    if (name !== run.config.ticker) {
+      const code = document.createElement("span");
+      code.className = "instrument-code";
+      code.textContent = run.config.ticker;
+      title.append(document.createTextNode(" "), code);
+    }
     const sub = document.createElement("small");
     sub.textContent = `${run.config.date} · ${statusLabels[run.status] || run.status}`;
     info.append(title, sub);
@@ -1248,11 +1258,13 @@ function renderRecents() {
     b.onclick = () => selectRun(run.id, { focus: true });
     holder.append(b);
   });
+  if (focusedRunId)
+    holder.querySelector(`[data-run-id="${focusedRunId}"]`)?.focus({ preventScroll: true });
 }
 function renderHistory() {
   const query = $("#history-search").value.trim().toLowerCase();
   const runs = state.historyRuns.filter((r) =>
-    `${r.config.ticker} ${r.config.provider} ${providerInfo(r.config.provider)?.name || ""} ${r.config.quick_model || ""} ${r.config.deep_model || ""}`
+    `${r.display_name || ""} ${r.config.ticker} ${r.config.provider} ${providerInfo(r.config.provider)?.name || ""} ${r.config.quick_model || ""} ${r.config.deep_model || ""}`
       .toLowerCase()
       .includes(query),
   );
@@ -1265,6 +1277,7 @@ function renderHistory() {
       r.rating,
       r.created_at,
       r.config.ticker,
+      r.display_name,
       r.config.date,
       r.config.provider,
     ]),
@@ -1312,7 +1325,7 @@ function renderHistory() {
     const tr = document.createElement("tr");
     if (state.run?.id === r.id) tr.setAttribute("aria-current", "true");
     [
-      r.config.ticker,
+      r.display_name || r.config.ticker,
       r.config.date,
       providerInfo(r.config.provider)?.name || r.config.provider,
       ratings[r.rating] || "—",
@@ -1326,7 +1339,13 @@ function renderHistory() {
       }),
     ].forEach((value, i) => {
       const td = document.createElement("td");
-      if (i === 3 && r.rating) {
+      if (i === 0 && r.display_name && r.display_name !== r.config.ticker) {
+        td.textContent = value;
+        const code = document.createElement("span");
+        code.className = "instrument-code";
+        code.textContent = r.config.ticker;
+        td.append(document.createTextNode(" "), code);
+      } else if (i === 3 && r.rating) {
         const span = document.createElement("span");
         span.className = "rating-chip";
         span.textContent = value;
@@ -1341,7 +1360,7 @@ function renderHistory() {
     b.textContent = "查看研究 ↗";
     b.setAttribute(
       "aria-label",
-      `查看 ${r.config.ticker} ${r.config.date} 的研究`,
+      `查看 ${r.display_name || r.config.ticker} ${r.config.ticker} ${r.config.date} 的研究`,
     );
     b.onclick = () => selectRun(r.id, { focus: true });
     td.append(b);
